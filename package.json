@@ -1,6 +1,6 @@
 {
-	"name": "pi-simplify",
-	"version": "1.0.0",
+	"name": "@geminixiang/pi-simplify",
+	"version": "0.0.1",
 	"description": "Simplify: code reuse, quality, and efficiency review for pi coding agent",
 	"main": "index.ts",
 	"keywords": [
