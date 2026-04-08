@@ -3,10 +3,17 @@
 	"version": "1.0.0",
 	"description": "Simplify: code reuse, quality, and efficiency review for pi coding agent",
 	"main": "index.ts",
-	"keywords": ["pi-package"],
+	"keywords": [
+		"pi-package"
+	],
 	"author": "",
 	"license": "MIT",
 	"pi": {
-		"extensions": ["./index.ts"]
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"@mariozechner/pi-coding-agent": "^0.65.2"
 	}
 }
