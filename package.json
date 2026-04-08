@@ -6,7 +6,11 @@
 	"keywords": [
 		"pi-package"
 	],
-	"author": "",
+	"author": "geminixiang",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/geminixiang/pi-simplify"
+	},
 	"license": "MIT",
 	"pi": {
 		"extensions": [
