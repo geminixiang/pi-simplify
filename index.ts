@@ -9,18 +9,12 @@
  * - Duplicate logic
  */
 
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import {
-  Container,
-  Box,
-  Spacer,
-  Text,
-  SelectList,
-  matchesKey,
-  Key,
-  truncateToWidth,
-  type SelectItem,
-} from "@mariozechner/pi-tui";
+import { matchesKey, Key, truncateToWidth, type SelectItem } from "@mariozechner/pi-tui";
 
 type SimplifyResult = {
   file: string;
@@ -75,18 +69,6 @@ You are a code cleanup assistant. Your job is to identify and remove unnecessary
    - Assess risk level
    - Provide clear reason for removal
 
-## Output Format
-
-For each candidate, output in this format:
-
-\`\`\`
-## [risk-level] file:line - Brief Description
-- Type: (dead-code|debug|commented|over-eng|duplicate)
-- Location: \`path/to/file.ext:123-456\`
-- Reason: Why this should be removed
-- Action: (delete|inline|confirm)
-\`\`\`
-
 ## Risk Levels
 
 - **safe**: Definitely can be deleted (unused, debug code)
@@ -105,88 +87,236 @@ For each candidate, output in this format:
    - Code that looks "unused" but is called via reflection/eval
    - Database migration files
 
-## Result
+## Output Format (REQUIRED)
 
-Start your response with one of:
-- "## Candidates Found: N" (followed by your analysis)
-- "## No Candidates" (if everything looks necessary)
-- "## Error" (if you couldn't complete the analysis)
+You may write prose analysis first, but you MUST end your response with a single fenced JSON block containing ALL candidates. This JSON is parsed programmatically — it must be valid JSON and use this exact shape:
 
-After listing candidates, end with:
-"## Ready for cleanup" if you found anything, or "## Code is clean" if not.
+\`\`\`json
+{
+  "candidates": [
+    {
+      "risk": "safe",
+      "file": "path/to/file.ext",
+      "lines": "12-15",
+      "type": "debug",
+      "reason": "Why this should be removed",
+      "action": "delete"
+    }
+  ]
+}
+\`\`\`
+
+Field notes:
+- \`risk\` — one of: "safe", "confirm", "review"
+- \`file\` — repository-relative path, no backticks, no markdown
+- \`lines\` — line number or range ("42" or "42-57"); empty string if unknown
+- \`type\` — one of: "dead-code", "debug", "commented", "over-eng", "duplicate"
+- \`reason\` — single plain-text sentence
+- \`action\` — one of: "delete", "inline", "confirm"
+
+If there are no candidates, output \`{"candidates": []}\`. Do NOT output anything after the closing \`\`\` fence.
 `;
 
 export default function simplifyExtension(pi: ExtensionAPI) {
-  /**
-   * Parse the AI's response to extract cleanup candidates
-   */
-  function parseCandidates(response: string): SimplifyResult[] {
-    const candidates: SimplifyResult[] = [];
-    const lines = response.split("\n");
-    let currentCandidate: Partial<SimplifyResult> | null = null;
-    let currentReason = "";
+  // Accumulate assistant text across the whole turn (multiple messages when
+  // the AI makes tool calls). Overwriting would drop the JSON block if it
+  // appears in an earlier message and a later one adds a short confirmation.
+  let assistantTextBuffer = "";
+  pi.on("message_end", (event) => {
+    const msg = event.message;
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return;
+    const text = (msg.content as { type: string; text?: string }[])
+      .filter((b) => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text as string)
+      .join("\n");
+    if (text) assistantTextBuffer += (assistantTextBuffer ? "\n" : "") + text;
+  });
 
-    for (const line of lines) {
-      // Look for risk level markers: [safe], [confirm], [review]
-      const riskMatch = line.match(/^\s*##\s*\[(safe|confirm|review)\]\s*(.+?)\s*-\s*(.+)$/);
-      if (riskMatch) {
-        // Save previous candidate
-        if (currentCandidate && currentCandidate.file && currentReason) {
-          candidates.push({
-            file: currentCandidate.file,
-            lines: currentCandidate.lines || "",
-            reason: currentReason.trim(),
-            risk: currentCandidate.risk || "review",
-          });
-        }
+  const RISK_VALUES = new Set(["safe", "confirm", "review"]);
 
-        const [, risk, location, description] = riskMatch;
-        currentCandidate = {
-          risk: risk as "safe" | "confirm" | "review",
-          file: location,
-          lines: description,
-        };
-        currentReason = "";
-        continue;
-      }
+  function normalizeRisk(value: unknown): "safe" | "confirm" | "review" {
+    const v = String(value ?? "")
+      .toLowerCase()
+      .trim();
+    return RISK_VALUES.has(v) ? (v as "safe" | "confirm" | "review") : "review";
+  }
 
-      // Collect reason lines
-      if (currentCandidate) {
-        const typeMatch = line.match(/^\s*-\s*Type:\s*(.+)$/);
-        const locationMatch = line.match(/^\s*-\s*Location:\s*`(.+)`/);
-        const reasonMatch = line.match(/^\s*-\s*Reason:\s*(.+)$/);
-        const actionMatch = line.match(/^\s*-\s*Action:\s*(.+)$/);
-
-        if (typeMatch) {
-          currentCandidate.lines = typeMatch[1];
-        }
-        if (locationMatch) {
-          currentCandidate.lines = locationMatch[1];
-        }
-        if (reasonMatch) {
-          currentReason = reasonMatch[1];
-        }
-        if (actionMatch) {
-          currentReason += ` [${actionMatch[1]}]`;
-        }
-      }
-    }
-
-    // Don't forget the last candidate
-    if (currentCandidate && currentCandidate.file && currentReason) {
-      candidates.push({
-        file: currentCandidate.file,
-        lines: currentCandidate.lines || "",
-        reason: currentReason.trim(),
-        risk: currentCandidate.risk || "review",
-      });
-    }
-
-    return candidates;
+  function stripMarkdown(text: string): string {
+    return text.replace(/[`*_]/g, "").trim();
   }
 
   /**
-   * Show selection dialog for candidates
+   * Try to parse a JSON candidates block. The prompt requires this format,
+   * but we tolerate the AI wrapping it in ```json ... ``` or ``` ... ```,
+   * and also handle the case where it embeds the JSON inline without fences.
+   * Returns null only when no valid JSON with a `candidates` array is found —
+   * a valid empty list returns [] (which means "the AI found nothing").
+   */
+  function parseCandidatesJSON(response: string): SimplifyResult[] | null {
+    const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
+    const blocks: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = fenceRe.exec(response)) !== null) blocks.push(m[1]);
+
+    const bareMatch = response.match(/\{[\s\S]*"candidates"[\s\S]*\}/);
+    if (bareMatch) blocks.push(bareMatch[0]);
+
+    // Walk newest-first: the contract puts the JSON at the end of the response.
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      try {
+        const parsed = JSON.parse(blocks[i]);
+        const list = parsed?.candidates;
+        if (!Array.isArray(list)) continue;
+        const out: SimplifyResult[] = [];
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+          const file = stripMarkdown(String(item.file ?? item.location ?? ""));
+          if (!file) continue;
+          const reason = stripMarkdown(String(item.reason ?? item.description ?? ""));
+          const action = item.action ? ` [${stripMarkdown(String(item.action))}]` : "";
+          out.push({
+            file,
+            lines: stripMarkdown(String(item.lines ?? "")),
+            reason: reason ? reason + action : action.trim() || "(no reason provided)",
+            risk: normalizeRisk(item.risk),
+          });
+        }
+        // A valid candidates array (even empty) is a successful parse
+        return out;
+      } catch {
+        // try next block
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Tolerant markdown parser — fallback for responses that don't emit the JSON block.
+   * Accepts many header/bullet variations that LLMs produce in practice.
+   */
+  function parseCandidatesMarkdown(response: string): SimplifyResult[] {
+    const candidates: SimplifyResult[] = [];
+    const lines = response.split("\n");
+
+    // Match `[safe]` / `[confirm]` / `[review]` anywhere on a "header-ish" line.
+    // A line counts as a header if the risk tag is preceded only by markdown noise:
+    // whitespace, #, *, -, digits, dots, parens, colons, backticks, underscores.
+    const HEADER_PREFIX = /^[\s#*\-–—•▸→0-9.)\]:`_]*$/;
+    const RISK_TAG = /\[(safe|confirm|review)\]/i;
+
+    let current: (Partial<SimplifyResult> & { _reason?: string; _action?: string }) | null = null;
+
+    const commit = () => {
+      if (!current) return;
+      if (!current.risk || !current.file) {
+        current = null;
+        return;
+      }
+      const reason = current._reason?.trim() || current.lines?.trim() || "(no reason provided)";
+      const action = current._action ? ` [${current._action.trim()}]` : "";
+      candidates.push({
+        file: current.file,
+        lines: current.lines || "",
+        reason: reason + action,
+        risk: current.risk as "safe" | "confirm" | "review",
+      });
+      current = null;
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine;
+      const tagMatch = line.match(RISK_TAG);
+      if (tagMatch) {
+        const prefix = line.slice(0, line.indexOf(tagMatch[0]));
+        if (HEADER_PREFIX.test(prefix)) {
+          // New candidate — commit the previous one
+          commit();
+          const risk = normalizeRisk(tagMatch[1]);
+          // Everything after the tag on this line
+          const rest = stripMarkdown(
+            line.slice(line.indexOf(tagMatch[0]) + tagMatch[0].length).replace(/^[\s\-–—:]+/, ""),
+          );
+          // Try to extract a file path (with optional :line or :line-line)
+          const fileMatch = rest.match(/([^\s()`*,]+?\.[a-zA-Z0-9]+)(?::(\d+(?:-\d+)?))?/);
+          current = { risk };
+          if (fileMatch) {
+            current.file = fileMatch[1];
+            current.lines = fileMatch[2] || "";
+            // Remaining text becomes a description/reason fallback
+            const desc = rest
+              .replace(fileMatch[0], "")
+              .replace(/^[\s\-–—:]+/, "")
+              .trim();
+            if (desc) current.lines = current.lines ? `${current.lines}: ${desc}` : desc;
+          } else {
+            // No recognizable file on header — treat rest as description
+            current.lines = rest;
+          }
+          continue;
+        }
+      }
+
+      if (!current) continue;
+
+      // Field extraction: tolerate `- Key:`, `* Key:`, `**Key:**`, or bare `Key:`.
+      const fieldMatch = line.match(
+        /^\s*(?:[-*•]\s*)?\*{0,2}(File|Location|Path|Reason|Why|Action|Lines?)\*{0,2}\s*:?\s*[:\-–—]?\s*(.+?)\s*$/i,
+      );
+      if (fieldMatch) {
+        const key = fieldMatch[1].toLowerCase();
+        const value = stripMarkdown(fieldMatch[2]);
+        if (key === "file" || key === "location" || key === "path") {
+          // Split `path.ts:12-15` into file + lines if current.file is still missing/weak
+          const withLine = value.match(/^(.+?)(?::(\d+(?:-\d+)?))?$/);
+          if (withLine) {
+            current.file = current.file || withLine[1];
+            if (withLine[2]) current.lines = withLine[2];
+          } else {
+            current.file = current.file || value;
+          }
+        } else if (key === "reason" || key === "why") {
+          current._reason = value;
+        } else if (key === "action") {
+          current._action = value;
+        } else if (key === "line" || key === "lines") {
+          current.lines = value;
+        }
+      }
+    }
+
+    commit();
+    return candidates;
+  }
+
+  /** Write raw AI output to a debug file so the user can see what the model actually returned. */
+  function dumpDebug(response: string): string {
+    const path = join(tmpdir(), `pi-simplify-debug-${Date.now()}.md`);
+    try {
+      writeFileSync(path, response, "utf8");
+      return path;
+    } catch {
+      return "";
+    }
+  }
+
+  type ParseOutcome = { kind: "ok"; candidates: SimplifyResult[] } | { kind: "unparseable" };
+
+  /**
+   * Parse the AI's response to extract cleanup candidates.
+   * - "ok" with non-empty list → show selector
+   * - "ok" with empty list   → AI legitimately found nothing
+   * - "unparseable"          → AI output didn't match any known format; dump for debug
+   */
+  function parseCandidates(response: string): ParseOutcome {
+    const json = parseCandidatesJSON(response);
+    if (json !== null) return { kind: "ok", candidates: json };
+    const md = parseCandidatesMarkdown(response);
+    if (md.length > 0) return { kind: "ok", candidates: md };
+    return { kind: "unparseable" };
+  }
+
+  /**
+   * Show selection dialog for candidates with proper multi-select support
    */
   async function showCandidateSelector(
     ctx: ExtensionCommandContext,
@@ -201,135 +331,153 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     const confirmCandidates = candidates.filter((c) => c.risk === "confirm");
     const reviewCandidates = candidates.filter((c) => c.risk === "review");
 
-    // Build items with checkbox-style labels
-    const items: SelectItem[] = [];
-    const indexToCandidate = new Map<number, SimplifyResult>();
+    // Build display items with section headers
+    const displayItems: SelectItem[] = [];
+    const selectableItems: { index: number; candidate: SimplifyResult }[] = [];
+    let globalIndex = 0;
 
     if (safeCandidates.length > 0) {
-      items.push({
+      displayItems.push({
         value: "__section__safe__",
         label: `── Safe to delete (${safeCandidates.length}) ──`,
         description: "",
       });
+      globalIndex++;
       for (const c of safeCandidates) {
-        const idx = items.length;
-        items.push({
+        displayItems.push({
           value: JSON.stringify(c),
-          label: `  [x] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          label: `${c.file} - ${c.reason}`,
           description: "Will be deleted",
         });
-        indexToCandidate.set(idx, c);
+        selectableItems.push({ index: globalIndex, candidate: c });
+        globalIndex++;
       }
     }
 
     if (confirmCandidates.length > 0) {
-      items.push({
+      displayItems.push({
         value: "__section__confirm__",
         label: `── Needs confirmation (${confirmCandidates.length}) ──`,
         description: "",
       });
+      globalIndex++;
       for (const c of confirmCandidates) {
-        const idx = items.length;
-        items.push({
+        displayItems.push({
           value: JSON.stringify(c),
-          label: `  [ ] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          label: `${c.file} - ${c.reason}`,
           description: "Select to delete",
         });
-        indexToCandidate.set(idx, c);
+        selectableItems.push({ index: globalIndex, candidate: c });
+        globalIndex++;
       }
     }
 
     if (reviewCandidates.length > 0) {
-      items.push({
+      displayItems.push({
         value: "__section__review__",
         label: `── Needs review (${reviewCandidates.length}) ──`,
         description: "",
       });
+      globalIndex++;
       for (const c of reviewCandidates) {
-        const idx = items.length;
-        items.push({
+        displayItems.push({
           value: JSON.stringify(c),
-          label: `  [ ] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          label: `${c.file} - ${c.reason}`,
           description: "Review before deleting",
         });
-        indexToCandidate.set(idx, c);
+        selectableItems.push({ index: globalIndex, candidate: c });
+        globalIndex++;
       }
     }
 
-    // Track selected items
-    const selectedIndices = new Set<number>();
-    const safeStartIdx = safeCandidates.length > 0 ? 1 : 0;
-    const safeEndIdx = safeStartIdx + safeCandidates.length;
+    // Track selected selectable items (by their selectableItems index)
+    const selectedSet = new Set<number>();
 
-    // Pre-select all safe items
-    for (let i = safeStartIdx; i < safeEndIdx; i++) {
-      selectedIndices.add(i);
+    // Pre-select all safe items (indices 0 to safeCandidates.length - 1 in selectableItems)
+    for (let i = 0; i < safeCandidates.length; i++) {
+      selectedSet.add(i);
     }
 
+    const maxVisible = 12;
+    let scrollOffset = 0;
+    let cursorPos = 0;
+
     const result = await ctx.ui.custom<SimplifyResult[]>((tui, theme, _keybindings, done) => {
-      const container = new Container();
+      // Render the multi-select list manually
+      const renderList = (width: number): string[] => {
+        const lines: string[] = [];
 
-      // Header box
-      const header = new Box(1, 0);
-      header.addChild(new Text(theme.fg("accent", theme.bold("Simplify: Select items to remove"))));
-      container.addChild(header);
-
-      // Summary line
-      const summary = `Found ${candidates.length} candidates (${safeCandidates.length} safe, ${confirmCandidates.length} confirm, ${reviewCandidates.length} review)`;
-      container.addChild(new Text(theme.fg("muted", summary)));
-      container.addChild(new Spacer(1));
-
-      // Use SelectList for navigation, toggle with space
-      const selectList = new SelectList(items, Math.min(items.length, 12), {
-        selectedPrefix: (_text) => theme.fg("accent", "> "),
-        selectedText: (text) => {
-          // Check if this item is selected based on text matching
-          for (const [idx, candidate] of indexToCandidate) {
-            const checkMark = selectedIndices.has(idx)
-              ? theme.fg("success", "[x]")
-              : theme.fg("dim", "[ ]");
-            if (text.includes(candidate.file)) {
-              return text.replace(/\[.?\]/, checkMark);
+        // Calculate which items are visible
+        const visibleItems: { selectableIdx: number | null; item: SelectItem }[] = [];
+        for (let i = 0; i < displayItems.length; i++) {
+          const item = displayItems[i];
+          if (item.value.startsWith("__section__")) {
+            visibleItems.push({ selectableIdx: null, item });
+          } else {
+            const selectableInfo = selectableItems.find((si) => si.index === i);
+            if (selectableInfo) {
+              const selectableIdx = selectableItems.indexOf(selectableInfo);
+              visibleItems.push({ selectableIdx, item });
             }
           }
-          return text;
-        },
-        description: (text) => theme.fg("muted", text),
-        scrollInfo: (text) => theme.fg("dim", text),
-        noMatch: (text) => theme.fg("warning", text),
-      });
+        }
 
-      // Scroll to show safe items first
-      selectList.setSelectedIndex(safeStartIdx);
+        // Show visible range with scroll
+        const startIdx = Math.max(0, scrollOffset);
+        const endIdx = Math.min(visibleItems.length, startIdx + maxVisible);
 
-      container.addChild(selectList);
-      container.addChild(new Spacer(1));
-      container.addChild(
-        new Text(
-          theme.fg(
-            "muted",
-            `Selected: ${selectedIndices.size} • space toggle • enter confirm • esc cancel`,
-          ),
-        ),
-      );
+        for (let vIdx = startIdx; vIdx < endIdx; vIdx++) {
+          const { selectableIdx, item } = visibleItems[vIdx];
+
+          if (item.value.startsWith("__section__")) {
+            // Section header
+            lines.push(theme.fg("accent", item.label));
+          } else {
+            // Selectable item
+            const isCursor = selectableIdx === cursorPos;
+            const isSelected = selectableIdx !== null && selectedSet.has(selectableIdx);
+            const prefix = isCursor ? theme.fg("accent", "> ") : "  ";
+            const checkbox = isSelected ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
+            const truncatedLabel = truncateToWidth(item.label, width - 6);
+            const line = `${prefix}${checkbox} ${truncatedLabel}`;
+            lines.push(isCursor ? theme.fg("accent", line) : line);
+          }
+        }
+
+        // Scroll indicator
+        if (visibleItems.length > maxVisible) {
+          const scrollInfo = `  (${startIdx + 1}-${endIdx}/${visibleItems.length})`;
+          lines.push(theme.fg("dim", scrollInfo));
+        }
+
+        return lines;
+      };
 
       return {
         render(width: number) {
-          return container.render(width);
+          const lines: string[] = [];
+          lines.push(theme.bold("Simplify: Select items to remove"));
+          lines.push(
+            theme.fg(
+              "muted",
+              `Found ${candidates.length} candidates (${safeCandidates.length} safe, ${confirmCandidates.length} confirm, ${reviewCandidates.length} review)`,
+            ),
+          );
+          lines.push("");
+          lines.push(...renderList(width));
+          lines.push("");
+          lines.push(
+            theme.fg(
+              "muted",
+              `Selected: ${selectedSet.size} • ↑↓ navigate • space toggle • a select all • enter confirm • esc cancel`,
+            ),
+          );
+          return lines;
         },
-        invalidate() {
-          container.invalidate();
-        },
+        invalidate() {},
         handleInput(data: string) {
           if (matchesKey(data, Key.enter)) {
-            // Return selected candidates
-            const results: SimplifyResult[] = [];
-            for (const idx of selectedIndices) {
-              const candidate = indexToCandidate.get(idx);
-              if (candidate) {
-                results.push(candidate);
-              }
-            }
+            const results = Array.from(selectedSet).map((i) => selectableItems[i].candidate);
             done(results);
             return;
           }
@@ -339,22 +487,62 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           }
           if (matchesKey(data, Key.space)) {
             // Toggle current selection
-            const currentItem = selectList.getSelectedItem();
-            if (currentItem && !currentItem.value.startsWith("__section__")) {
-              const currentIdx = items.findIndex((i) => i.value === currentItem.value);
-              if (selectedIndices.has(currentIdx)) {
-                selectedIndices.delete(currentIdx);
-              } else {
-                selectedIndices.add(currentIdx);
-              }
-              // Move to next item
-              selectList.setSelectedIndex(currentIdx + 1);
+            if (selectedSet.has(cursorPos)) {
+              selectedSet.delete(cursorPos);
+            } else {
+              selectedSet.add(cursorPos);
             }
             tui.requestRender();
             return;
           }
-          selectList.handleInput(data);
-          tui.requestRender();
+          if (matchesKey(data, "a")) {
+            // Select/deselect all
+            if (selectedSet.size === selectableItems.length) {
+              selectedSet.clear();
+            } else {
+              for (let i = 0; i < selectableItems.length; i++) {
+                selectedSet.add(i);
+              }
+            }
+            tui.requestRender();
+            return;
+          }
+
+          // Navigation
+          if (matchesKey(data, Key.down)) {
+            cursorPos = Math.min(selectableItems.length - 1, cursorPos + 1);
+            // Ensure cursor is within visible window
+            const displayIdx = selectableItems[cursorPos].index;
+            if (displayIdx >= scrollOffset + maxVisible) {
+              scrollOffset = displayIdx - maxVisible + 1;
+            }
+            tui.requestRender();
+            return;
+          }
+          if (matchesKey(data, Key.up)) {
+            cursorPos = Math.max(0, cursorPos - 1);
+            // Ensure cursor is within visible window
+            const displayIdx = selectableItems[cursorPos].index;
+            if (displayIdx < scrollOffset) {
+              // Scroll up to show the item, and include section header if it's just above
+              scrollOffset = Math.max(0, displayIdx - 1);
+            }
+            tui.requestRender();
+            return;
+          }
+          if (matchesKey(data, Key.home)) {
+            cursorPos = 0;
+            scrollOffset = 0;
+            tui.requestRender();
+            return;
+          }
+          if (matchesKey(data, Key.end)) {
+            cursorPos = selectableItems.length - 1;
+            const lastDisplayIdx = selectableItems[cursorPos].index;
+            scrollOffset = Math.max(0, lastDisplayIdx - maxVisible + 1);
+            tui.requestRender();
+            return;
+          }
         },
       };
     });
@@ -444,47 +632,41 @@ Report:
         fullPrompt += `\n\n## Additional Focus\n\n${args.trim()}`;
       }
 
-      // Send to agent for analysis
+      // Reset capture buffer, then send prompt and wait.
+      // message_end events append to assistantTextBuffer during the turn.
+      //
+      // Race condition fix: pi.sendUserMessage() queues the message, but
+      // ctx.waitForIdle() resolves immediately if the agent is still in idle.
+      // We must wait for the agent to transition out of idle before waiting.
+      assistantTextBuffer = "";
+      let resolveTurnStarted: () => void;
+      const turnStarted = new Promise<void>((r) => {
+        resolveTurnStarted = r;
+      });
+      pi.on("turn_start", () => resolveTurnStarted!());
       pi.sendUserMessage(fullPrompt);
-
-      // Wait for analysis to complete
+      await turnStarted;
       await ctx.waitForIdle();
+      const analysisText = assistantTextBuffer;
 
-      // Get the analysis from session
-      const entries = ctx.sessionManager.getEntries();
-      let analysisText = "";
-
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const entry = entries[i];
-        if (entry.type === "message" && entry.message.role === "assistant") {
-          const content = entry.message.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block.type === "text" && typeof block.text === "string") {
-                if (block.text.includes("## ")) {
-                  analysisText = block.text;
-                  break;
-                }
-              }
-            }
-          }
-          if (analysisText) break;
-        }
-      }
-
-      if (!analysisText || analysisText.includes("No Candidates")) {
-        ctx.ui.notify("No cleanup candidates found!", "info");
+      if (!analysisText) {
+        ctx.ui.notify("Could not read analysis — no response captured.", "error");
         return;
       }
 
-      if (analysisText.includes("## Error")) {
-        ctx.ui.notify("Analysis failed. Check the conversation for details.", "error");
+      const outcome = parseCandidates(analysisText);
+
+      if (outcome.kind === "unparseable") {
+        const debugPath = dumpDebug(analysisText);
+        const suffix = debugPath ? ` Raw response saved to ${debugPath}` : "";
+        ctx.ui.notify(
+          `Could not parse cleanup candidates — the model did not return the expected JSON block.${suffix}`,
+          "warning",
+        );
         return;
       }
 
-      // Parse candidates from analysis
-      const candidates = parseCandidates(analysisText);
-
+      const candidates = outcome.candidates;
       if (candidates.length === 0) {
         ctx.ui.notify("No cleanup candidates found!", "info");
         return;
