@@ -1,23 +1,34 @@
 {
-	"name": "@geminixiang/pi-simplify",
-	"version": "0.0.3",
-	"description": "Simplify: code reuse, quality, and efficiency review for pi coding agent",
-	"main": "index.ts",
-	"keywords": [
-		"pi-package"
-	],
-	"author": "geminixiang",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/geminixiang/pi-simplify"
-	},
-	"license": "MIT",
-	"pi": {
-		"extensions": [
-			"./index.ts"
-		]
-	},
-	"dependencies": {
-		"@mariozechner/pi-coding-agent": "^0.65.2"
-	}
+  "name": "@geminixiang/pi-simplify",
+  "version": "0.0.3",
+  "description": "Simplify: Clean up leftover code after feature implementation",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "geminixiang",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/geminixiang/pi-simplify"
+  },
+  "main": "index.ts",
+  "scripts": {
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.65.2"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.45.0",
+    "oxlint": "^1.60.0",
+    "typescript": "^6.0.2"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
 }

@@ -1,28 +1,20 @@
 # pi-simplify
 
-A [pi coding agent](https://github.com/mariozechner/pi) extension that adds a `/simplify` command to review changed code for reuse, quality, and efficiency — then fix any issues found.
+A [pi coding agent](https://github.com/mariozechner/pi) extension that cleans up leftover code after feature implementation.
 
 ## What it does
 
-Running `/simplify` launches three parallel sub-agents that each review your git diff from a different angle:
+After implementing a feature, your code often accumulates:
 
-- **Code Reuse** — finds newly written code that duplicates existing utilities or helpers
-- **Code Quality** — catches hacky patterns: redundant state, parameter sprawl, copy-paste blocks, leaky abstractions, stringly-typed code, unnecessary comments
-- **Efficiency** — spots unnecessary work, missed concurrency, hot-path bloat, memory leaks, and overly broad operations
+- **Dead code** - unused exports, orphaned files, zombie variables
+- **Debug remnants** - console.log, debugger statements, temp flags
+- **Commented-out code** - old logic left in comments
+- **Over-engineering** - "might use later" abstractions never used
+- **Duplicate logic** - repeated if-else blocks doing the same thing
 
-After all three agents finish, issues are aggregated and fixed in place. A brief summary is printed at the end.
+`/simplify` finds these and removes them.
 
 ## Installation
-
-### 1. Install pi-subagents
-
-`pi-simplify` relies on the Agent tool provided by the `pi-subagents` package. Install it first:
-
-```sh
-pi install npm:pi-subagents
-```
-
-### 2. Install pi-simplify
 
 ```sh
 pi install npm:@geminixiang/pi-simplify
@@ -30,17 +22,48 @@ pi install npm:@geminixiang/pi-simplify
 
 ## Usage
 
-After installation, the `/simplify` command is available inside pi:
+### Full Simplify
 
 ```
 /simplify
 ```
 
-You can also pass an optional focus area to narrow the review:
+Analyzes all git changes and presents cleanup candidates:
+
+- **Safe** (green) - auto-selected, will be deleted
+- **Confirm** (yellow) - delete after user confirms
+- **Review** (orange) - user should review first
+
+### Quick Simplify
 
 ```
-/simplify focus on performance in the database layer
+/simplify-quick
 ```
+
+Only removes the obviously safe stuff:
+
+- `console.log` / `console.warn` / `console.error`
+- `debugger` statements
+- Unused imports
+- Empty catch blocks
+
+No confirmation needed - just does it.
+
+### With Focus
+
+```
+/simplify focus on the utils folder
+/simplify focus on removing debug code
+```
+
+## Comparison with pi-review
+
+|              | pi-review                   | pi-simplify           |
+| ------------ | --------------------------- | --------------------- |
+| **Goal**     | Find problems               | Delete excess         |
+| **Attitude** | Conservative (marks issues) | Active (removes junk) |
+| **Output**   | Findings list               | Deletion plan         |
+| **Trigger**  | Manual review               | Post-feature cleanup  |
 
 ## License
 

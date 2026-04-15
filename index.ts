@@ -1,89 +1,564 @@
+/**
+ * pi-simplify: Code Cleanup Extension for pi
+ *
+ * Removes leftover code after feature implementation:
+ * - Dead code (unused exports, orphaned files)
+ * - Debug remnants (console.log, debugger, temp flags)
+ * - Commented-out code
+ * - Over-engineering ("might use later" abstractions)
+ * - Duplicate logic
+ */
+
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import {
+  Container,
+  Box,
+  Spacer,
+  Text,
+  SelectList,
+  matchesKey,
+  Key,
+  truncateToWidth,
+  type SelectItem,
+} from "@mariozechner/pi-tui";
 
-const CUSTOM_TYPE = "simplify-context";
-const DELIVERY_FOLLOW_UP = "followUp";
-const NOTIFY_REVIEW_STARTED = "Simplify review started";
-const NOTIFY_REVIEW_QUEUED = "Simplify review queued as a follow-up";
+type SimplifyResult = {
+  file: string;
+  lines: string;
+  reason: string;
+  risk: "safe" | "confirm" | "review";
+};
 
-const SIMPLIFY_PROMPT = `# Simplify: Code Review and Cleanup
+const SIMPLIFY_PROMPT = `# Simplify: Clean Up Leftover Code
 
-Review all changed files for reuse, quality, and efficiency. Fix any issues found.
+You are a code cleanup assistant. Your job is to identify and remove unnecessary code left over after feature implementation.
 
-## Phase 1: Identify Changes
+## What to Find
 
-Run \`git diff\` (or \`git diff HEAD\` if there are staged changes) to see what changed. If there are no git changes, review the most recently modified files that the user mentioned or that you edited earlier in this conversation.
+### 1. Dead Code (Safe to Delete)
+- **Unused exports**: Functions/classes defined but never imported elsewhere
+- **Orphan files**: Files created but never referenced
+- **Zombie variables**: Variables assigned but never used
+- **Empty blocks**: try/catch/if blocks with no logic
 
-## Phase 2: Launch Three Review SubAgents in Parallel
+### 2. Debug Remnants (Safe to Delete)
+- console.log, console.warn, console.error statements
+- debugger statements
+- Temporary feature flags (e.g., \`ENABLE_DEBUG\`, \`DEBUG_MODE\`)
+- Temporary todo comments that are now implemented
 
-Use the Agent tool to launch all three agents concurrently in a single message. Pass each agent the full diff so it has the complete context.
+### 3. Commented-out Code (Review Before Deleting)
+- Old logic left in comments
+- Disabled features (commented out rather than deleted)
+- Copy-pasted templates never customized
 
-### SubAgent 1: Code Reuse Review
+### 4. Over-engineering (Confirm Before Deleting)
+- Abstractions created "for future use" but never used
+- Helper functions with single call sites (could be inlined)
+- Layers of indirection that add no value
 
-For each change:
+### 5. Duplicate Logic (Confirm Before Deleting)
+- Repeated if-else blocks doing the same thing
+- Copy-paste code with minor variations
+- Duplicate utility functions
 
-1. **Search for existing utilities and helpers** that could replace newly written code. Look for similar patterns elsewhere in the codebase — common locations are utility directories, shared modules, and files adjacent to the changed ones.
-2. **Flag any new function that duplicates existing functionality.** Suggest the existing function to use instead.
-3. **Flag any inline logic that could use an existing utility** — hand-rolled string manipulation, manual path handling, custom environment checks, ad-hoc type guards, and similar patterns are common candidates.
+## How to Analyze
 
-### SubAgent 2: Code Quality Review
+1. Run \`git diff\` to see what changed
+2. For each change, determine if it's:
+   - **Essential**: Required for the feature to work
+   - **Residual**: Left over from development/debugging
+   - **Legacy**: Old code not touched by this change
 
-Review the same changes for hacky patterns:
+3. For each residual item:
+   - Identify exact file and line(s)
+   - Assess risk level
+   - Provide clear reason for removal
 
-1. **Redundant state**: state that duplicates existing state, cached values that could be derived, observers/effects that could be direct calls
-2. **Parameter sprawl**: adding new parameters to a function instead of generalizing or restructuring existing ones
-3. **Copy-paste with slight variation**: near-duplicate code blocks that should be unified with a shared abstraction
-4. **Leaky abstractions**: exposing internal details that should be encapsulated, or breaking existing abstraction boundaries
-5. **Stringly-typed code**: using raw strings where constants, enums (string unions), or branded types already exist in the codebase
-6. **Unnecessary JSX nesting**: wrapper Boxes/elements that add no layout value — check if inner component props (flexShrink, alignItems, etc.) already provide the needed behavior
-7. **Unnecessary comments**: comments explaining WHAT the code does (well-named identifiers already do that), narrating the change, or referencing the task/caller — delete; keep only non-obvious WHY (hidden constraints, subtle invariants, workarounds)
+## Output Format
 
-### SubAgent 3: Efficiency Review
+For each candidate, output in this format:
 
-Review the same changes for efficiency:
+\`\`\`
+## [risk-level] file:line - Brief Description
+- Type: (dead-code|debug|commented|over-eng|duplicate)
+- Location: \`path/to/file.ext:123-456\`
+- Reason: Why this should be removed
+- Action: (delete|inline|confirm)
+\`\`\`
 
-1. **Unnecessary work**: redundant computations, repeated file reads, duplicate network/API calls, N+1 patterns
-2. **Missed concurrency**: independent operations run sequentially when they could run in parallel
-3. **Hot-path bloat**: new blocking work added to startup or per-request/per-render hot paths
-4. **Recurring no-op updates**: state/store updates inside polling loops, intervals, or event handlers that fire unconditionally — add a change-detection guard so downstream consumers aren't notified when nothing changed. Also: if a wrapper function takes an updater/reducer callback, verify it honors same-reference returns (or whatever the "no change" signal is) — otherwise callers' early-return no-ops are silently defeated
-5. **Unnecessary existence checks**: pre-checking file/resource existence before operating (TOCTOU anti-pattern) — operate directly and handle the error
-6. **Memory**: unbounded data structures, missing cleanup, event listener leaks
-7. **Overly broad operations**: reading entire files when only a portion is needed, loading all items when filtering for one
+## Risk Levels
 
-## Phase 3: Fix Issues
+- **safe**: Definitely can be deleted (unused, debug code)
+- **confirm**: Delete after user confirms (over-engineered, duplicates)
+- **review**: User should review before action (commented code, ambiguous)
 
-Wait for all three agents to complete. Aggregate their findings and fix each issue directly. If a finding is a false positive or not worth addressing, note it and move on — do not argue with the finding, just skip it.
+## Rules
 
-When done, briefly summarize what was fixed (or confirm the code was already clean).
+1. When in doubt, mark as "confirm" or "review" - don't delete without consent
+2. For inline candidates, show the alternative
+3. Don't flag necessary code just because it's simple
+4. Respect existing abstraction boundaries
+5. Be especially careful with:
+   - Error handling code
+   - Security-related logic
+   - Code that looks "unused" but is called via reflection/eval
+   - Database migration files
+
+## Result
+
+Start your response with one of:
+- "## Candidates Found: N" (followed by your analysis)
+- "## No Candidates" (if everything looks necessary)
+- "## Error" (if you couldn't complete the analysis)
+
+After listing candidates, end with:
+"## Ready for cleanup" if you found anything, or "## Code is clean" if not.
 `;
 
-function buildPrompt(args: string): string {
-	const focus = args.trim();
-	if (!focus) return SIMPLIFY_PROMPT;
-	return `${SIMPLIFY_PROMPT}\n\n## Additional Focus\n\n${focus}`;
-}
+export default function simplifyExtension(pi: ExtensionAPI) {
+  /**
+   * Parse the AI's response to extract cleanup candidates
+   */
+  function parseCandidates(response: string): SimplifyResult[] {
+    const candidates: SimplifyResult[] = [];
+    const lines = response.split("\n");
+    let currentCandidate: Partial<SimplifyResult> | null = null;
+    let currentReason = "";
 
-function runSimplify(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): void {
-	const message = {
-		customType: CUSTOM_TYPE,
-		content: buildPrompt(args),
-		display: false,
-	};
+    for (const line of lines) {
+      // Look for risk level markers: [safe], [confirm], [review]
+      const riskMatch = line.match(/^\s*##\s*\[(safe|confirm|review)\]\s*(.+?)\s*-\s*(.+)$/);
+      if (riskMatch) {
+        // Save previous candidate
+        if (currentCandidate && currentCandidate.file && currentReason) {
+          candidates.push({
+            file: currentCandidate.file,
+            lines: currentCandidate.lines || "",
+            reason: currentReason.trim(),
+            risk: currentCandidate.risk || "review",
+          });
+        }
 
-	if (ctx.isIdle()) {
-		pi.sendMessage(message, { triggerTurn: true });
-		ctx.ui.notify(NOTIFY_REVIEW_STARTED, "info");
-		return;
-	}
+        const [, risk, location, description] = riskMatch;
+        currentCandidate = {
+          risk: risk as "safe" | "confirm" | "review",
+          file: location,
+          lines: description,
+        };
+        currentReason = "";
+        continue;
+      }
 
-	pi.sendMessage(message, { deliverAs: DELIVERY_FOLLOW_UP, triggerTurn: true });
-	ctx.ui.notify(NOTIFY_REVIEW_QUEUED, "info");
-}
+      // Collect reason lines
+      if (currentCandidate) {
+        const typeMatch = line.match(/^\s*-\s*Type:\s*(.+)$/);
+        const locationMatch = line.match(/^\s*-\s*Location:\s*`(.+)`/);
+        const reasonMatch = line.match(/^\s*-\s*Reason:\s*(.+)$/);
+        const actionMatch = line.match(/^\s*-\s*Action:\s*(.+)$/);
 
-export default function simplifyExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("simplify", {
-		description: "Review changed code for reuse, quality, and efficiency, then fix issues",
-		handler: async (args: string, ctx: ExtensionCommandContext) => {
-			runSimplify(pi, ctx, args);
-		},
-	});
+        if (typeMatch) {
+          currentCandidate.lines = typeMatch[1];
+        }
+        if (locationMatch) {
+          currentCandidate.lines = locationMatch[1];
+        }
+        if (reasonMatch) {
+          currentReason = reasonMatch[1];
+        }
+        if (actionMatch) {
+          currentReason += ` [${actionMatch[1]}]`;
+        }
+      }
+    }
+
+    // Don't forget the last candidate
+    if (currentCandidate && currentCandidate.file && currentReason) {
+      candidates.push({
+        file: currentCandidate.file,
+        lines: currentCandidate.lines || "",
+        reason: currentReason.trim(),
+        risk: currentCandidate.risk || "review",
+      });
+    }
+
+    return candidates;
+  }
+
+  /**
+   * Show selection dialog for candidates
+   */
+  async function showCandidateSelector(
+    ctx: ExtensionCommandContext,
+    candidates: SimplifyResult[],
+  ): Promise<SimplifyResult[]> {
+    if (candidates.length === 0) {
+      return [];
+    }
+
+    // Categorize by risk level for display
+    const safeCandidates = candidates.filter((c) => c.risk === "safe");
+    const confirmCandidates = candidates.filter((c) => c.risk === "confirm");
+    const reviewCandidates = candidates.filter((c) => c.risk === "review");
+
+    // Build items with checkbox-style labels
+    const items: SelectItem[] = [];
+    const indexToCandidate = new Map<number, SimplifyResult>();
+
+    if (safeCandidates.length > 0) {
+      items.push({
+        value: "__section__safe__",
+        label: `── Safe to delete (${safeCandidates.length}) ──`,
+        description: "",
+      });
+      for (const c of safeCandidates) {
+        const idx = items.length;
+        items.push({
+          value: JSON.stringify(c),
+          label: `  [x] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          description: "Will be deleted",
+        });
+        indexToCandidate.set(idx, c);
+      }
+    }
+
+    if (confirmCandidates.length > 0) {
+      items.push({
+        value: "__section__confirm__",
+        label: `── Needs confirmation (${confirmCandidates.length}) ──`,
+        description: "",
+      });
+      for (const c of confirmCandidates) {
+        const idx = items.length;
+        items.push({
+          value: JSON.stringify(c),
+          label: `  [ ] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          description: "Select to delete",
+        });
+        indexToCandidate.set(idx, c);
+      }
+    }
+
+    if (reviewCandidates.length > 0) {
+      items.push({
+        value: "__section__review__",
+        label: `── Needs review (${reviewCandidates.length}) ──`,
+        description: "",
+      });
+      for (const c of reviewCandidates) {
+        const idx = items.length;
+        items.push({
+          value: JSON.stringify(c),
+          label: `  [ ] ${c.file} - ${truncateToWidth(c.reason, 40)}`,
+          description: "Review before deleting",
+        });
+        indexToCandidate.set(idx, c);
+      }
+    }
+
+    // Track selected items
+    const selectedIndices = new Set<number>();
+    const safeStartIdx = safeCandidates.length > 0 ? 1 : 0;
+    const safeEndIdx = safeStartIdx + safeCandidates.length;
+
+    // Pre-select all safe items
+    for (let i = safeStartIdx; i < safeEndIdx; i++) {
+      selectedIndices.add(i);
+    }
+
+    const result = await ctx.ui.custom<SimplifyResult[]>((tui, theme, _keybindings, done) => {
+      const container = new Container();
+
+      // Header box
+      const header = new Box(1, 0);
+      header.addChild(new Text(theme.fg("accent", theme.bold("Simplify: Select items to remove"))));
+      container.addChild(header);
+
+      // Summary line
+      const summary = `Found ${candidates.length} candidates (${safeCandidates.length} safe, ${confirmCandidates.length} confirm, ${reviewCandidates.length} review)`;
+      container.addChild(new Text(theme.fg("muted", summary)));
+      container.addChild(new Spacer(1));
+
+      // Use SelectList for navigation, toggle with space
+      const selectList = new SelectList(items, Math.min(items.length, 12), {
+        selectedPrefix: (_text) => theme.fg("accent", "> "),
+        selectedText: (text) => {
+          // Check if this item is selected based on text matching
+          for (const [idx, candidate] of indexToCandidate) {
+            const checkMark = selectedIndices.has(idx)
+              ? theme.fg("success", "[x]")
+              : theme.fg("dim", "[ ]");
+            if (text.includes(candidate.file)) {
+              return text.replace(/\[.?\]/, checkMark);
+            }
+          }
+          return text;
+        },
+        description: (text) => theme.fg("muted", text),
+        scrollInfo: (text) => theme.fg("dim", text),
+        noMatch: (text) => theme.fg("warning", text),
+      });
+
+      // Scroll to show safe items first
+      selectList.setSelectedIndex(safeStartIdx);
+
+      container.addChild(selectList);
+      container.addChild(new Spacer(1));
+      container.addChild(
+        new Text(
+          theme.fg(
+            "muted",
+            `Selected: ${selectedIndices.size} • space toggle • enter confirm • esc cancel`,
+          ),
+        ),
+      );
+
+      return {
+        render(width: number) {
+          return container.render(width);
+        },
+        invalidate() {
+          container.invalidate();
+        },
+        handleInput(data: string) {
+          if (matchesKey(data, Key.enter)) {
+            // Return selected candidates
+            const results: SimplifyResult[] = [];
+            for (const idx of selectedIndices) {
+              const candidate = indexToCandidate.get(idx);
+              if (candidate) {
+                results.push(candidate);
+              }
+            }
+            done(results);
+            return;
+          }
+          if (matchesKey(data, Key.escape)) {
+            done([]);
+            return;
+          }
+          if (matchesKey(data, Key.space)) {
+            // Toggle current selection
+            const currentItem = selectList.getSelectedItem();
+            if (currentItem && !currentItem.value.startsWith("__section__")) {
+              const currentIdx = items.findIndex((i) => i.value === currentItem.value);
+              if (selectedIndices.has(currentIdx)) {
+                selectedIndices.delete(currentIdx);
+              } else {
+                selectedIndices.add(currentIdx);
+              }
+              // Move to next item
+              selectList.setSelectedIndex(currentIdx + 1);
+            }
+            tui.requestRender();
+            return;
+          }
+          selectList.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+
+    return result ?? [];
+  }
+
+  /**
+   * Execute the cleanup by sending deletion commands
+   */
+  async function executeCleanup(
+    ctx: ExtensionCommandContext,
+    selected: SimplifyResult[],
+  ): Promise<void> {
+    if (selected.length === 0) {
+      ctx.ui.notify("No items selected for cleanup", "info");
+      return;
+    }
+
+    const safeItems = selected.filter((c) => c.risk === "safe");
+    const confirmItems = selected.filter((c) => c.risk === "confirm");
+
+    // Build cleanup prompt
+    const cleanupPrompt = `# Cleanup Instructions
+
+Delete the following code:
+
+${selected.map((c) => `- ${c.file}: ${c.reason}`).join("\n")}
+
+For each item:
+1. Read the file to find the exact location
+2. Remove only the specified code (not surrounding code unless instructed)
+3. If the removal affects other code, stop and report the issue
+4. After all deletions, verify the code still works by running any existing tests
+
+Report:
+- What was deleted
+- Any issues encountered
+- Files that may need further attention`;
+
+    ctx.ui.notify(
+      `Starting cleanup of ${selected.length} items (${safeItems.length} safe, ${confirmItems.length} confirmed)`,
+      "info",
+    );
+
+    pi.sendUserMessage(cleanupPrompt);
+  }
+
+  /**
+   * Main command handler
+   */
+  pi.registerCommand("simplify", {
+    description: "Clean up leftover code (dead code, debug remnants, over-engineering)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      if (!ctx.hasUI) {
+        ctx.ui.notify("Simplify requires interactive mode", "error");
+        return;
+      }
+
+      if (!ctx.isIdle()) {
+        ctx.ui.notify(
+          "Cannot run simplify while agent is busy. Wait for current task to complete.",
+          "warning",
+        );
+        return;
+      }
+
+      // Check if in git repo
+      const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
+      if (code !== 0) {
+        ctx.ui.notify("Not a git repository", "error");
+        return;
+      }
+
+      // Check if there are changes
+      const { stdout: gitStatus } = await pi.exec("git", ["status", "--porcelain"]);
+      if (!gitStatus.trim()) {
+        ctx.ui.notify("No git changes found. Simplify reviews uncommitted changes.", "info");
+        return;
+      }
+
+      ctx.ui.notify("Analyzing code for cleanup candidates...", "info");
+
+      // Build prompt with optional focus
+      let fullPrompt = SIMPLIFY_PROMPT;
+      if (args.trim()) {
+        fullPrompt += `\n\n## Additional Focus\n\n${args.trim()}`;
+      }
+
+      // Send to agent for analysis
+      pi.sendUserMessage(fullPrompt);
+
+      // Wait for analysis to complete
+      await ctx.waitForIdle();
+
+      // Get the analysis from session
+      const entries = ctx.sessionManager.getEntries();
+      let analysisText = "";
+
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (entry.type === "message" && entry.message.role === "assistant") {
+          const content = entry.message.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === "text" && typeof block.text === "string") {
+                if (block.text.includes("## ")) {
+                  analysisText = block.text;
+                  break;
+                }
+              }
+            }
+          }
+          if (analysisText) break;
+        }
+      }
+
+      if (!analysisText || analysisText.includes("No Candidates")) {
+        ctx.ui.notify("No cleanup candidates found!", "info");
+        return;
+      }
+
+      if (analysisText.includes("## Error")) {
+        ctx.ui.notify("Analysis failed. Check the conversation for details.", "error");
+        return;
+      }
+
+      // Parse candidates from analysis
+      const candidates = parseCandidates(analysisText);
+
+      if (candidates.length === 0) {
+        ctx.ui.notify("No cleanup candidates found!", "info");
+        return;
+      }
+
+      ctx.ui.notify(`Found ${candidates.length} candidates. Select items to remove...`, "info");
+
+      // Show selector
+      const selected = await showCandidateSelector(ctx, candidates);
+
+      if (!selected || selected.length === 0) {
+        ctx.ui.notify("Cleanup cancelled", "info");
+        return;
+      }
+
+      // Execute cleanup
+      await executeCleanup(ctx, selected);
+    },
+  });
+
+  /**
+   * Quick simplify - auto-clean safe items only
+   */
+  pi.registerCommand("simplify-quick", {
+    description: "Quick cleanup of obviously safe items (debug code, unused exports)",
+    handler: async (_args: string, ctx: ExtensionCommandContext) => {
+      if (!ctx.hasUI) {
+        ctx.ui.notify("Simplify requires interactive mode", "error");
+        return;
+      }
+
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Agent is busy. Try again after current task.", "warning");
+        return;
+      }
+
+      const quickPrompt = `# Quick Cleanup
+
+Find and delete ONLY the most obviously safe cleanup items:
+
+1. \`console.log\`, \`console.warn\`, \`console.error\` statements
+2. \`debugger\` statements
+3. Unused \`import\` statements (imported but never used)
+4. Empty \`catch\` blocks (just \`catch (e) {}\`)
+5. Unused \`const\`/\`let\`/\`var\` declarations
+
+DO NOT delete:
+- Commented-out code
+- Over-engineered abstractions
+- Duplicate logic
+- Anything that might be needed
+
+For each item found:
+1. Confirm it's truly unused by searching for references
+2. Delete only the specific lines
+3. Report what was deleted
+
+Return a summary of what was deleted.`;
+
+      ctx.ui.notify("Running quick cleanup...", "info");
+      pi.sendUserMessage(quickPrompt, { deliverAs: "followUp" });
+    },
+  });
+
+  /**
+   * Status indicator on startup
+   */
+  pi.on("session_start", async (_event, ctx) => {
+    const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
+    if (code === 0) {
+      ctx.ui.setStatus(
+        "simplify",
+        `${ctx.ui.theme.fg("accent", "simplify")} ${ctx.ui.theme.fg("muted", "ready (try /simplify)")}`,
+      );
+    }
+  });
 }
