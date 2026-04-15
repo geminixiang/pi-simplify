@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-simplify",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Simplify: Clean up leftover code after feature implementation",
   "keywords": [
     "pi-package"
