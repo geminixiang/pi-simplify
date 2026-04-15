@@ -1,4 +1,5 @@
 # pi-simplify
+[![npm version](https://img.shields.io/npm/v/@geminixiang/pi-simplify.svg)](https://www.npmjs.com/package/@geminixiang/pi-simplify)
 
 A [pi coding agent](https://github.com/mariozechner/pi) extension that cleans up leftover code after feature implementation.
 
