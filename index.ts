@@ -9,10 +9,6 @@
  * - Duplicate logic
  */
 
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, type SelectItem } from "@mariozechner/pi-tui";
 
@@ -98,7 +94,6 @@ You may write prose analysis first, but you MUST end your response with a single
       "risk": "safe",
       "file": "path/to/file.ext",
       "lines": "12-15",
-      "type": "debug",
       "reason": "Why this should be removed",
       "action": "delete"
     }
@@ -110,9 +105,8 @@ Field notes:
 - \`risk\` — one of: "safe", "confirm", "review"
 - \`file\` — repository-relative path, no backticks, no markdown
 - \`lines\` — line number or range ("42" or "42-57"); empty string if unknown
-- \`type\` — one of: "dead-code", "debug", "commented", "over-eng", "duplicate"
 - \`reason\` — single plain-text sentence
-- \`action\` — one of: "delete", "inline", "confirm"
+- \`action\` — one of: "delete", "inline", "confirm" (appended to reason)
 
 If there are no candidates, output \`{"candidates": []}\`. Do NOT output anything after the closing \`\`\` fence.
 `;
@@ -122,6 +116,15 @@ export default function simplifyExtension(pi: ExtensionAPI) {
   // the AI makes tool calls). Overwriting would drop the JSON block if it
   // appears in an earlier message and a later one adds a short confirmation.
   let assistantTextBuffer = "";
+  let resolvePendingTurnStart: (() => void) | null = null;
+
+  pi.on("turn_start", () => {
+    if (!resolvePendingTurnStart) return;
+    const resolve = resolvePendingTurnStart;
+    resolvePendingTurnStart = null;
+    resolve();
+  });
+
   pi.on("message_end", (event) => {
     const msg = event.message;
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) return;
@@ -171,7 +174,8 @@ export default function simplifyExtension(pi: ExtensionAPI) {
         for (const item of list) {
           if (!item || typeof item !== "object") continue;
           const file = stripMarkdown(String(item.file ?? item.location ?? ""));
-          if (!file) continue;
+          // Validate path is within repo (no path traversal)
+          if (!file || file.includes("..") || file.startsWith("/")) continue;
           const reason = stripMarkdown(String(item.reason ?? item.description ?? ""));
           const action = item.action ? ` [${stripMarkdown(String(item.action))}]` : "";
           out.push({
@@ -191,131 +195,6 @@ export default function simplifyExtension(pi: ExtensionAPI) {
   }
 
   /**
-   * Tolerant markdown parser — fallback for responses that don't emit the JSON block.
-   * Accepts many header/bullet variations that LLMs produce in practice.
-   */
-  function parseCandidatesMarkdown(response: string): SimplifyResult[] {
-    const candidates: SimplifyResult[] = [];
-    const lines = response.split("\n");
-
-    // Match `[safe]` / `[confirm]` / `[review]` anywhere on a "header-ish" line.
-    // A line counts as a header if the risk tag is preceded only by markdown noise:
-    // whitespace, #, *, -, digits, dots, parens, colons, backticks, underscores.
-    const HEADER_PREFIX = /^[\s#*\-–—•▸→0-9.)\]:`_]*$/;
-    const RISK_TAG = /\[(safe|confirm|review)\]/i;
-
-    let current: (Partial<SimplifyResult> & { _reason?: string; _action?: string }) | null = null;
-
-    const commit = () => {
-      if (!current) return;
-      if (!current.risk || !current.file) {
-        current = null;
-        return;
-      }
-      const reason = current._reason?.trim() || current.lines?.trim() || "(no reason provided)";
-      const action = current._action ? ` [${current._action.trim()}]` : "";
-      candidates.push({
-        file: current.file,
-        lines: current.lines || "",
-        reason: reason + action,
-        risk: current.risk as "safe" | "confirm" | "review",
-      });
-      current = null;
-    };
-
-    for (const rawLine of lines) {
-      const line = rawLine;
-      const tagMatch = line.match(RISK_TAG);
-      if (tagMatch) {
-        const prefix = line.slice(0, line.indexOf(tagMatch[0]));
-        if (HEADER_PREFIX.test(prefix)) {
-          // New candidate — commit the previous one
-          commit();
-          const risk = normalizeRisk(tagMatch[1]);
-          // Everything after the tag on this line
-          const rest = stripMarkdown(
-            line.slice(line.indexOf(tagMatch[0]) + tagMatch[0].length).replace(/^[\s\-–—:]+/, ""),
-          );
-          // Try to extract a file path (with optional :line or :line-line)
-          const fileMatch = rest.match(/([^\s()`*,]+?\.[a-zA-Z0-9]+)(?::(\d+(?:-\d+)?))?/);
-          current = { risk };
-          if (fileMatch) {
-            current.file = fileMatch[1];
-            current.lines = fileMatch[2] || "";
-            // Remaining text becomes a description/reason fallback
-            const desc = rest
-              .replace(fileMatch[0], "")
-              .replace(/^[\s\-–—:]+/, "")
-              .trim();
-            if (desc) current.lines = current.lines ? `${current.lines}: ${desc}` : desc;
-          } else {
-            // No recognizable file on header — treat rest as description
-            current.lines = rest;
-          }
-          continue;
-        }
-      }
-
-      if (!current) continue;
-
-      // Field extraction: tolerate `- Key:`, `* Key:`, `**Key:**`, or bare `Key:`.
-      const fieldMatch = line.match(
-        /^\s*(?:[-*•]\s*)?\*{0,2}(File|Location|Path|Reason|Why|Action|Lines?)\*{0,2}\s*:?\s*[:\-–—]?\s*(.+?)\s*$/i,
-      );
-      if (fieldMatch) {
-        const key = fieldMatch[1].toLowerCase();
-        const value = stripMarkdown(fieldMatch[2]);
-        if (key === "file" || key === "location" || key === "path") {
-          // Split `path.ts:12-15` into file + lines if current.file is still missing/weak
-          const withLine = value.match(/^(.+?)(?::(\d+(?:-\d+)?))?$/);
-          if (withLine) {
-            current.file = current.file || withLine[1];
-            if (withLine[2]) current.lines = withLine[2];
-          } else {
-            current.file = current.file || value;
-          }
-        } else if (key === "reason" || key === "why") {
-          current._reason = value;
-        } else if (key === "action") {
-          current._action = value;
-        } else if (key === "line" || key === "lines") {
-          current.lines = value;
-        }
-      }
-    }
-
-    commit();
-    return candidates;
-  }
-
-  /** Write raw AI output to a debug file so the user can see what the model actually returned. */
-  function dumpDebug(response: string): string {
-    const path = join(tmpdir(), `pi-simplify-debug-${Date.now()}.md`);
-    try {
-      writeFileSync(path, response, "utf8");
-      return path;
-    } catch {
-      return "";
-    }
-  }
-
-  type ParseOutcome = { kind: "ok"; candidates: SimplifyResult[] } | { kind: "unparseable" };
-
-  /**
-   * Parse the AI's response to extract cleanup candidates.
-   * - "ok" with non-empty list → show selector
-   * - "ok" with empty list   → AI legitimately found nothing
-   * - "unparseable"          → AI output didn't match any known format; dump for debug
-   */
-  function parseCandidates(response: string): ParseOutcome {
-    const json = parseCandidatesJSON(response);
-    if (json !== null) return { kind: "ok", candidates: json };
-    const md = parseCandidatesMarkdown(response);
-    if (md.length > 0) return { kind: "ok", candidates: md };
-    return { kind: "unparseable" };
-  }
-
-  /**
    * Show selection dialog for candidates with proper multi-select support
    */
   async function showCandidateSelector(
@@ -331,72 +210,45 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     const confirmCandidates = candidates.filter((c) => c.risk === "confirm");
     const reviewCandidates = candidates.filter((c) => c.risk === "review");
 
-    // Build display items with section headers
+    const RISK_CONFIG = {
+      safe: { label: "Safe to delete", description: "Will be deleted", selected: true },
+      confirm: { label: "Needs confirmation", description: "Select to delete", selected: false },
+      review: { label: "Needs review", description: "Review before deleting", selected: false },
+    } as const;
+
+    const sections = [
+      { key: "safe" as const, items: safeCandidates },
+      { key: "confirm" as const, items: confirmCandidates },
+      { key: "review" as const, items: reviewCandidates },
+    ]
+      .map(({ key, items }) => ({ key, items, config: RISK_CONFIG[key], total: items.length }))
+      .filter((s) => s.total > 0);
+
     const displayItems: SelectItem[] = [];
     const selectableItems: { index: number; candidate: SimplifyResult }[] = [];
     let globalIndex = 0;
 
-    if (safeCandidates.length > 0) {
+    for (const section of sections) {
       displayItems.push({
-        value: "__section__safe__",
-        label: `── Safe to delete (${safeCandidates.length}) ──`,
+        value: `__section__${section.key}__`,
+        label: `── ${section.config.label} (${section.total}) ──`,
         description: "",
       });
       globalIndex++;
-      for (const c of safeCandidates) {
+      for (const c of section.items) {
         displayItems.push({
           value: JSON.stringify(c),
           label: `${c.file} - ${c.reason}`,
-          description: "Will be deleted",
+          description: section.config.description,
         });
-        selectableItems.push({ index: globalIndex, candidate: c });
-        globalIndex++;
+        selectableItems.push({ index: globalIndex++, candidate: c });
       }
     }
 
-    if (confirmCandidates.length > 0) {
-      displayItems.push({
-        value: "__section__confirm__",
-        label: `── Needs confirmation (${confirmCandidates.length}) ──`,
-        description: "",
-      });
-      globalIndex++;
-      for (const c of confirmCandidates) {
-        displayItems.push({
-          value: JSON.stringify(c),
-          label: `${c.file} - ${c.reason}`,
-          description: "Select to delete",
-        });
-        selectableItems.push({ index: globalIndex, candidate: c });
-        globalIndex++;
-      }
-    }
-
-    if (reviewCandidates.length > 0) {
-      displayItems.push({
-        value: "__section__review__",
-        label: `── Needs review (${reviewCandidates.length}) ──`,
-        description: "",
-      });
-      globalIndex++;
-      for (const c of reviewCandidates) {
-        displayItems.push({
-          value: JSON.stringify(c),
-          label: `${c.file} - ${c.reason}`,
-          description: "Review before deleting",
-        });
-        selectableItems.push({ index: globalIndex, candidate: c });
-        globalIndex++;
-      }
-    }
-
-    // Track selected selectable items (by their selectableItems index)
-    const selectedSet = new Set<number>();
-
-    // Pre-select all safe items (indices 0 to safeCandidates.length - 1 in selectableItems)
-    for (let i = 0; i < safeCandidates.length; i++) {
-      selectedSet.add(i);
-    }
+    // Pre-select all safe items
+    const selectedSet = new Set<number>(
+      safeCandidates.length > 0 ? Array.from({ length: safeCandidates.length }, (_, i) => i) : [],
+    );
 
     const maxVisible = 12;
     let scrollOffset = 0;
@@ -414,10 +266,9 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           if (item.value.startsWith("__section__")) {
             visibleItems.push({ selectableIdx: null, item });
           } else {
-            const selectableInfo = selectableItems.find((si) => si.index === i);
-            if (selectableInfo) {
-              const selectableIdx = selectableItems.indexOf(selectableInfo);
-              visibleItems.push({ selectableIdx, item });
+            const selectableIdx = selectableItems.findIndex((si) => si.index === i);
+            if (selectableIdx >= 0) {
+              visibleItems.push({ selectableIdx, item: displayItems[i] });
             }
           }
         }
@@ -565,7 +416,7 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     const safeItems = selected.filter((c) => c.risk === "safe");
     const confirmItems = selected.filter((c) => c.risk === "confirm");
 
-    // Build cleanup prompt
+    // Build cleanup prompt with verification step
     const cleanupPrompt = `# Cleanup Instructions
 
 Delete the following code:
@@ -578,8 +429,14 @@ For each item:
 3. If the removal affects other code, stop and report the issue
 4. After all deletions, verify the code still works by running any existing tests
 
+IMPORTANT: After completing deletions:
+- Run \`npm test\` or equivalent test command
+- If tests fail, report which tests failed and whether it's related to the cleanup
+- If there are no tests, at least verify the files parse correctly (e.g., \`node --check\`)
+
 Report:
 - What was deleted
+- Test results (pass/fail)
 - Any issues encountered
 - Files that may need further attention`;
 
@@ -635,17 +492,26 @@ Report:
       // Reset capture buffer, then send prompt and wait.
       // message_end events append to assistantTextBuffer during the turn.
       //
-      // Race condition fix: pi.sendUserMessage() queues the message, but
-      // ctx.waitForIdle() resolves immediately if the agent is still in idle.
-      // We must wait for the agent to transition out of idle before waiting.
+      // Wait for the queued analysis turn to actually begin before waiting for
+      // idle; otherwise waitForIdle() can return immediately while the agent is
+      // still idle and the queued prompt has not started yet.
       assistantTextBuffer = "";
-      let resolveTurnStarted: () => void;
       const turnStarted = new Promise<void>((r) => {
-        resolveTurnStarted = r;
+        resolvePendingTurnStart = r;
       });
-      pi.on("turn_start", () => resolveTurnStarted!());
+
       pi.sendUserMessage(fullPrompt);
-      await turnStarted;
+
+      const started = await Promise.race<boolean>([
+        turnStarted.then(() => true),
+        new Promise<boolean>((r) => setTimeout(() => r(false), 10000)),
+      ]);
+      if (!started) {
+        resolvePendingTurnStart = null;
+        ctx.ui.notify("Analysis did not start within 10 seconds. Please try again.", "warning");
+        return;
+      }
+
       await ctx.waitForIdle();
       const analysisText = assistantTextBuffer;
 
@@ -654,19 +520,16 @@ Report:
         return;
       }
 
-      const outcome = parseCandidates(analysisText);
+      const candidates = parseCandidatesJSON(analysisText);
 
-      if (outcome.kind === "unparseable") {
-        const debugPath = dumpDebug(analysisText);
-        const suffix = debugPath ? ` Raw response saved to ${debugPath}` : "";
+      if (candidates === null) {
         ctx.ui.notify(
-          `Could not parse cleanup candidates — the model did not return the expected JSON block.${suffix}`,
+          "Could not parse cleanup candidates — the model did not return the expected JSON block.",
           "warning",
         );
         return;
       }
 
-      const candidates = outcome.candidates;
       if (candidates.length === 0) {
         ctx.ui.notify("No cleanup candidates found!", "info");
         return;
