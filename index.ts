@@ -597,7 +597,7 @@ Return a summary of what was deleted.`;
   /**
    * Status indicator on startup
    */
-  pi.on("session_start", async (_event, ctx) => {
+  /**pi.on("session_start", async (_event, ctx) => {
     const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
     if (code === 0) {
       ctx.ui.setStatus(
@@ -606,4 +606,5 @@ Return a summary of what was deleted.`;
       );
     }
   });
+  */
 }
