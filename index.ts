@@ -1,83 +1,99 @@
 /**
- * pi-simplify: Code Cleanup Extension for pi
+ * pi-simplify: Code Review & Cleanup Extension for pi
  *
- * Removes leftover code after feature implementation:
- * - Dead code (unused exports, orphaned files)
- * - Debug remnants (console.log, debugger, temp flags)
- * - Commented-out code
- * - Over-engineering ("might use later" abstractions)
- * - Duplicate logic
+ * Reviews changed code for reuse, quality, and efficiency:
+ * - Reuse: replace newly-written code with existing utilities
+ * - Quality: dead code, debug remnants, commented-out code, over-engineering, duplicate logic
+ * - Efficiency: redundant work, missed concurrency, hot-path bloat, memory leaks
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth, type SelectItem } from "@mariozechner/pi-tui";
 
+type Category = "reuse" | "quality" | "efficiency";
+type Risk = "safe" | "confirm" | "review";
+type Action = "delete" | "inline" | "refactor" | "parallelize";
+
 type SimplifyResult = {
+  category: Category;
   file: string;
   lines: string;
   reason: string;
-  risk: "safe" | "confirm" | "review";
+  risk: Risk;
+  action: Action;
 };
 
-const SIMPLIFY_PROMPT = `# Simplify: Clean Up Leftover Code
+const SIMPLIFY_PROMPT = `# Simplify: Review Changed Code for Reuse, Quality, and Efficiency
 
-You are a code cleanup assistant. Your job is to identify and remove unnecessary code left over after feature implementation.
+You are a code review assistant. Review the changed code along three axes — **Reuse**, **Quality**, and **Efficiency** — and surface concrete fixes.
 
 ## What to Find
 
-### 1. Dead Code (Safe to Delete)
-- **Unused exports**: Functions/classes defined but never imported elsewhere
-- **Orphan files**: Files created but never referenced
-- **Zombie variables**: Variables assigned but never used
-- **Empty blocks**: try/catch/if blocks with no logic
+### A. Reuse (Confirm Before Replacing)
 
-### 2. Debug Remnants (Safe to Delete)
-- console.log, console.warn, console.error statements
-- debugger statements
-- Temporary feature flags (e.g., \`ENABLE_DEBUG\`, \`DEBUG_MODE\`)
-- Temporary todo comments that are now implemented
+Before flagging, **search the codebase** (utility directories, shared modules, files adjacent to the change) for existing helpers. Quote the existing symbol you'd use.
 
-### 3. Commented-out Code (Review Before Deleting)
-- Old logic left in comments
-- Disabled features (commented out rather than deleted)
-- Copy-pasted templates never customized
+- **Duplicates an existing function**: a newly written helper does what an existing one already does
+- **Inline logic that has a utility**: hand-rolled string manipulation, manual path handling, custom env checks, ad-hoc type guards
+- **Reinvented framework primitive**: re-implementing something the language/stdlib/framework already provides
 
-### 4. Over-engineering (Confirm Before Deleting)
-- Abstractions created "for future use" but never used
-- Helper functions with single call sites (could be inlined)
-- Layers of indirection that add no value
+### B. Quality
 
-### 5. Duplicate Logic (Confirm Before Deleting)
-- Repeated if-else blocks doing the same thing
-- Copy-paste code with minor variations
-- Duplicate utility functions
+#### B1. Dead Code (Safe to Delete)
+- Unused exports, orphan files, zombie variables, empty try/catch/if blocks
+
+#### B2. Debug Remnants (Safe to Delete)
+- \`console.log\` / \`console.warn\` / \`console.error\`, \`debugger\`, temporary feature flags, stale TODO comments
+
+#### B3. Commented-out Code (Review)
+- Old logic left in comments, disabled features, uncustomized templates
+
+#### B4. Over-engineering (Confirm)
+- Abstractions created "for future use" but unused, single-call-site helpers that should be inlined, useless indirection
+
+#### B5. Hacky Patterns (Confirm)
+- **Redundant state**: state that duplicates other state, cached values that could be derived, observers that could be direct calls
+- **Parameter sprawl**: piling new parameters onto a function instead of restructuring
+- **Copy-paste with variation**: near-duplicate blocks that should share an abstraction
+- **Leaky abstractions**: exposing internals or breaking existing boundaries
+- **Stringly-typed code**: raw strings where an existing constant/enum/union exists
+- **Unnecessary wrapper elements**: JSX/DOM wrappers that add no layout value
+- **Nested conditionals**: ternary chains or if/else nested 3+ levels deep — flatten with early returns or a lookup table
+- **Useless comments**: comments restating WHAT the code does, narrating the change, or referencing the task/caller — keep only non-obvious WHY
+
+### C. Efficiency (Confirm)
+
+- **Unnecessary work**: redundant computations, repeated file reads, duplicate API calls, N+1 patterns
+- **Missed concurrency**: independent operations run sequentially when they could run in parallel
+- **Hot-path bloat**: blocking work added to startup or per-request/per-render hot paths
+- **Recurring no-op updates**: state writes inside loops/intervals/handlers that fire unconditionally — add a change-detection guard
+- **Unnecessary existence checks**: pre-checking file/resource existence before operating (TOCTOU) — operate directly and handle the error
+- **Memory**: unbounded data structures, missing cleanup, event listener leaks
+- **Overly broad operations**: reading whole files when a slice would do, loading all items when filtering for one
 
 ## How to Analyze
 
-1. Run \`git diff\` to see what changed
-2. For each change, determine if it's:
-   - **Essential**: Required for the feature to work
-   - **Residual**: Left over from development/debugging
-   - **Legacy**: Old code not touched by this change
-
-3. For each residual item:
+1. Run \`git diff\` to see what changed.
+2. For each change, classify as **Essential** / **Residual** / **Legacy** (don't flag legacy code unless the diff touches it).
+3. For each finding:
    - Identify exact file and line(s)
-   - Assess risk level
-   - Provide clear reason for removal
+   - Assign **category** (reuse / quality / efficiency) and **risk**
+   - State the concrete fix (which existing utility to call, which lines to delete, how to parallelize, etc.)
 
 ## Risk Levels
 
-- **safe**: Definitely can be deleted (unused, debug code)
-- **confirm**: Delete after user confirms (over-engineered, duplicates)
-- **review**: User should review before action (commented code, ambiguous)
+- **safe**: Definitely apply (dead code, debug remnants)
+- **confirm**: Apply after user confirms (reuse swaps, over-engineering, hacky patterns, efficiency fixes)
+- **review**: User should look first (commented-out code, ambiguous cases)
 
 ## Rules
 
-1. When in doubt, mark as "confirm" or "review" - don't delete without consent
-2. For inline candidates, show the alternative
-3. Don't flag necessary code just because it's simple
-4. Respect existing abstraction boundaries
-5. Be especially careful with:
+1. When in doubt, mark as "confirm" or "review" — don't change without consent.
+2. For reuse findings, name the existing symbol/file you'd swap to.
+3. For efficiency findings, briefly justify the win (e.g., "N+1 → single query", "sequential awaits → Promise.all").
+4. Don't flag necessary code just because it's simple.
+5. Respect existing abstraction boundaries.
+6. Be especially careful with:
    - Error handling code
    - Security-related logic
    - Code that looks "unused" but is called via reflection/eval
@@ -91,22 +107,24 @@ You may write prose analysis first, but you MUST end your response with a single
 {
   "candidates": [
     {
-      "risk": "safe",
+      "category": "reuse",
+      "risk": "confirm",
       "file": "path/to/file.ext",
       "lines": "12-15",
-      "reason": "Why this should be removed",
-      "action": "delete"
+      "reason": "Replace hand-rolled join with existing pathJoin() in src/utils/path.ts",
+      "action": "refactor"
     }
   ]
 }
 \`\`\`
 
 Field notes:
+- \`category\` — one of: "reuse", "quality", "efficiency"
 - \`risk\` — one of: "safe", "confirm", "review"
 - \`file\` — repository-relative path, no backticks, no markdown
 - \`lines\` — line number or range ("42" or "42-57"); empty string if unknown
-- \`reason\` — single plain-text sentence
-- \`action\` — one of: "delete", "inline", "confirm" (appended to reason)
+- \`reason\` — single plain-text sentence stating the concrete fix
+- \`action\` — one of: "delete", "inline", "refactor", "parallelize"
 
 If there are no candidates, output \`{"candidates": []}\`. Do NOT output anything after the closing \`\`\` fence.
 `;
@@ -135,17 +153,33 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     if (text) assistantTextBuffer += (assistantTextBuffer ? "\n" : "") + text;
   });
 
-  const RISK_VALUES = new Set(["safe", "confirm", "review"]);
+  const CATEGORY_VALUES = new Set<Category>(["reuse", "quality", "efficiency"]);
+  const RISK_VALUES = new Set<Risk>(["safe", "confirm", "review"]);
+  const ACTION_VALUES = new Set<Action>(["delete", "inline", "refactor", "parallelize"]);
 
-  function normalizeRisk(value: unknown): "safe" | "confirm" | "review" {
+  function normalizeCategory(value: unknown): Category {
     const v = String(value ?? "")
       .toLowerCase()
       .trim();
-    return RISK_VALUES.has(v) ? (v as "safe" | "confirm" | "review") : "review";
+    return CATEGORY_VALUES.has(v as Category) ? (v as Category) : "quality";
+  }
+
+  function normalizeRisk(value: unknown): Risk {
+    const v = String(value ?? "")
+      .toLowerCase()
+      .trim();
+    return RISK_VALUES.has(v as Risk) ? (v as Risk) : "review";
+  }
+
+  function normalizeAction(value: unknown): Action | null {
+    const v = String(value ?? "")
+      .toLowerCase()
+      .trim();
+    return ACTION_VALUES.has(v as Action) ? (v as Action) : null;
   }
 
   function stripMarkdown(text: string): string {
-    return text.replace(/[`*_]/g, "").trim();
+    return text.replace(/[`*]/g, "").trim();
   }
 
   /**
@@ -177,12 +211,15 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           // Validate path is within repo (no path traversal)
           if (!file || file.includes("..") || file.startsWith("/")) continue;
           const reason = stripMarkdown(String(item.reason ?? item.description ?? ""));
-          const action = item.action ? ` [${stripMarkdown(String(item.action))}]` : "";
+          const action = normalizeAction(item.action);
+          if (!action) continue;
           out.push({
+            category: normalizeCategory(item.category),
             file,
             lines: stripMarkdown(String(item.lines ?? "")),
-            reason: reason ? reason + action : action.trim() || "(no reason provided)",
+            reason: reason || "(no reason provided)",
             risk: normalizeRisk(item.risk),
+            action,
           });
         }
         // A valid candidates array (even empty) is a successful parse
@@ -194,9 +231,6 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     return null;
   }
 
-  /**
-   * Show selection dialog for candidates with proper multi-select support
-   */
   async function showCandidateSelector(
     ctx: ExtensionCommandContext,
     candidates: SimplifyResult[],
@@ -211,9 +245,9 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     const reviewCandidates = candidates.filter((c) => c.risk === "review");
 
     const RISK_CONFIG = {
-      safe: { label: "Safe to delete", description: "Will be deleted", selected: true },
-      confirm: { label: "Needs confirmation", description: "Select to delete", selected: false },
-      review: { label: "Needs review", description: "Review before deleting", selected: false },
+      safe: { label: "Safe to apply", description: "Will be applied" },
+      confirm: { label: "Needs confirmation", description: "Select to apply" },
+      review: { label: "Needs review", description: "Review before applying" },
     } as const;
 
     const sections = [
@@ -255,21 +289,16 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     let cursorPos = 0;
 
     const result = await ctx.ui.custom<SimplifyResult[]>((tui, theme, _keybindings, done) => {
-      // Render the multi-select list manually
       const renderList = (width: number): string[] => {
         const lines: string[] = [];
 
-        // Calculate which items are visible
         const visibleItems: { selectableIdx: number | null; item: SelectItem }[] = [];
-        for (let i = 0; i < displayItems.length; i++) {
-          const item = displayItems[i];
+        let nextSelectableIdx = 0;
+        for (const item of displayItems) {
           if (item.value.startsWith("__section__")) {
             visibleItems.push({ selectableIdx: null, item });
           } else {
-            const selectableIdx = selectableItems.findIndex((si) => si.index === i);
-            if (selectableIdx >= 0) {
-              visibleItems.push({ selectableIdx, item: displayItems[i] });
-            }
+            visibleItems.push({ selectableIdx: nextSelectableIdx++, item });
           }
         }
 
@@ -307,7 +336,7 @@ export default function simplifyExtension(pi: ExtensionAPI) {
       return {
         render(width: number) {
           const lines: string[] = [];
-          lines.push(theme.bold("Simplify: Select items to remove"));
+          lines.push(theme.bold("Simplify: Select findings to apply"));
           lines.push(
             theme.fg(
               "muted",
@@ -401,58 +430,44 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     return result ?? [];
   }
 
-  /**
-   * Execute the cleanup by sending deletion commands
-   */
-  async function executeCleanup(
+  async function applyFindings(
     ctx: ExtensionCommandContext,
     selected: SimplifyResult[],
   ): Promise<void> {
     if (selected.length === 0) {
-      ctx.ui.notify("No items selected for cleanup", "info");
+      ctx.ui.notify("No findings selected to apply", "info");
       return;
     }
 
     const safeItems = selected.filter((c) => c.risk === "safe");
     const confirmItems = selected.filter((c) => c.risk === "confirm");
 
-    // Build cleanup prompt with verification step
-    const cleanupPrompt = `# Cleanup Instructions
+    const cleanupPrompt = `# Apply Review Findings
 
-Delete the following code:
+Apply the following findings. Each item includes a bracketed action (e.g. \`[delete]\`, \`[refactor]\`, \`[parallelize]\`, \`[inline]\`) — follow that action, not a blanket delete.
 
-${selected.map((c) => `- ${c.file}: ${c.reason}`).join("\n")}
+${selected.map((c) => `- ${c.file} (${c.lines || "?"}): ${c.reason} [${c.action}]`).join("\n")}
 
 For each item:
 1. Read the file to find the exact location
-2. Remove only the specified code (not surrounding code unless instructed)
-3. If the removal affects other code, stop and report the issue
-4. After all deletions, verify the code still works by running any existing tests
+2. Apply only the specified change (not surrounding code unless instructed)
+3. For refactor/inline/parallelize: preserve behavior; if the change has visible side effects, stop and report
+4. If the change affects other code, stop and report the issue
 
-IMPORTANT: After completing deletions:
-- Run \`npm test\` or equivalent test command
-- If tests fail, report which tests failed and whether it's related to the cleanup
-- If there are no tests, at least verify the files parse correctly (e.g., \`node --check\`)
-
-Report:
-- What was deleted
-- Test results (pass/fail)
-- Any issues encountered
-- Files that may need further attention`;
+After applying all changes:
+- Run \`npm test\` or equivalent; if there are no tests, verify the files parse/type-check
+- Report what changed, test results, and any items skipped with reasons`;
 
     ctx.ui.notify(
-      `Starting cleanup of ${selected.length} items (${safeItems.length} safe, ${confirmItems.length} confirmed)`,
+      `Applying ${selected.length} findings (${safeItems.length} safe, ${confirmItems.length} confirmed)`,
       "info",
     );
 
     pi.sendUserMessage(cleanupPrompt);
   }
 
-  /**
-   * Main command handler
-   */
   pi.registerCommand("simplify", {
-    description: "Clean up leftover code (dead code, debug remnants, over-engineering)",
+    description: "Review changed code for reuse, quality, and efficiency, then apply fixes",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("Simplify requires interactive mode", "error");
@@ -481,7 +496,7 @@ Report:
         return;
       }
 
-      ctx.ui.notify("Analyzing code for cleanup candidates...", "info");
+      ctx.ui.notify("Analyzing code for review findings...", "info");
 
       // Build prompt with optional focus
       let fullPrompt = SIMPLIFY_PROMPT;
@@ -524,35 +539,32 @@ Report:
 
       if (candidates === null) {
         ctx.ui.notify(
-          "Could not parse cleanup candidates — the model did not return the expected JSON block.",
+          "Could not parse review findings — the model did not return the expected JSON block.",
           "warning",
         );
         return;
       }
 
       if (candidates.length === 0) {
-        ctx.ui.notify("No cleanup candidates found!", "info");
+        ctx.ui.notify("No review findings found!", "info");
         return;
       }
 
-      ctx.ui.notify(`Found ${candidates.length} candidates. Select items to remove...`, "info");
+      ctx.ui.notify(`Found ${candidates.length} findings. Select findings to apply...`, "info");
 
       // Show selector
       const selected = await showCandidateSelector(ctx, candidates);
 
       if (!selected || selected.length === 0) {
-        ctx.ui.notify("Cleanup cancelled", "info");
+        ctx.ui.notify("Apply findings cancelled", "info");
         return;
       }
 
-      // Execute cleanup
-      await executeCleanup(ctx, selected);
+      // Apply selected findings
+      await applyFindings(ctx, selected);
     },
   });
 
-  /**
-   * Quick simplify - auto-clean safe items only
-   */
   pi.registerCommand("simplify-quick", {
     description: "Quick cleanup of obviously safe items (debug code, unused exports)",
     handler: async (_args: string, ctx: ExtensionCommandContext) => {
@@ -593,18 +605,4 @@ Return a summary of what was deleted.`;
       pi.sendUserMessage(quickPrompt, { deliverAs: "followUp" });
     },
   });
-
-  /**
-   * Status indicator on startup
-   */
-  /**pi.on("session_start", async (_event, ctx) => {
-    const { code } = await pi.exec("git", ["rev-parse", "--git-dir"]);
-    if (code === 0) {
-      ctx.ui.setStatus(
-        "simplify",
-        `${ctx.ui.theme.fg("accent", "simplify")} ${ctx.ui.theme.fg("muted", "ready (try /simplify)")}`,
-      );
-    }
-  });
-  */
 }
