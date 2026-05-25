@@ -639,45 +639,4 @@ After applying all changes:
       await applyFindings(ctx, selected);
     },
   });
-
-  pi.registerCommand("simplify-quick", {
-    description: "Quick cleanup of obviously safe items (debug code, unused exports)",
-    handler: async (_args: string, ctx: ExtensionCommandContext) => {
-      if (!ctx.hasUI) {
-        ctx.ui.notify("Simplify requires interactive mode", "error");
-        return;
-      }
-
-      if (!ctx.isIdle()) {
-        ctx.ui.notify("Agent is busy. Try again after current task.", "warning");
-        return;
-      }
-
-      const quickPrompt = `# Quick Cleanup
-
-Find and delete ONLY the most obviously safe cleanup items:
-
-1. \`console.log\`, \`console.warn\`, \`console.error\` statements
-2. \`debugger\` statements
-3. Unused \`import\` statements (imported but never used)
-4. Empty \`catch\` blocks (just \`catch (e) {}\`)
-5. Unused \`const\`/\`let\`/\`var\` declarations
-
-DO NOT delete:
-- Commented-out code
-- Over-engineered abstractions
-- Duplicate logic
-- Anything that might be needed
-
-For each item found:
-1. Confirm it's truly unused by searching for references
-2. Delete only the specific lines
-3. Report what was deleted
-
-Return a summary of what was deleted.`;
-
-      ctx.ui.notify("Running quick cleanup...", "info");
-      pi.sendUserMessage(quickPrompt, { deliverAs: "followUp" });
-    },
-  });
 }

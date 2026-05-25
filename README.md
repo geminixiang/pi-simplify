@@ -36,21 +36,6 @@ Analyzes all git changes and presents cleanup candidates:
 - **Confirm** (yellow) - delete after user confirms
 - **Review** (orange) - user should review first
 
-### Quick Simplify
-
-```
-/simplify-quick
-```
-
-Only removes the obviously safe stuff:
-
-- `console.log` / `console.warn` / `console.error`
-- `debugger` statements
-- Unused imports
-- Empty catch blocks
-
-No confirmation needed - just does it.
-
 ### With Focus
 
 ```
