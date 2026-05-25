@@ -19,7 +19,9 @@
     "fmt:check": "oxfmt --check"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.65.2"
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@earendil-works/pi-tui": ">=0.74.0",
+    "typebox": "^1.1.38"
   },
   "devDependencies": {
     "oxfmt": "^0.45.0",

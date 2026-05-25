@@ -7,8 +7,19 @@
  * - Efficiency: redundant work, missed concurrency, hot-path bloat, memory leaks
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth, type SelectItem } from "@mariozechner/pi-tui";
+import {
+  defineTool,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  matchesKey,
+  Key,
+  truncateToWidth,
+  visibleWidth,
+  type SelectItem,
+} from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 
 type Category = "reuse" | "quality" | "efficiency";
 type Risk = "safe" | "confirm" | "review";
@@ -101,22 +112,7 @@ Before flagging, **search the codebase** (utility directories, shared modules, f
 
 ## Output Format (REQUIRED)
 
-You may write prose analysis first, but you MUST end your response with a single fenced JSON block containing ALL candidates. This JSON is parsed programmatically — it must be valid JSON and use this exact shape:
-
-\`\`\`json
-{
-  "candidates": [
-    {
-      "category": "reuse",
-      "risk": "confirm",
-      "file": "path/to/file.ext",
-      "lines": "12-15",
-      "reason": "Replace hand-rolled join with existing pathJoin() in src/utils/path.ts",
-      "action": "refactor"
-    }
-  ]
-}
-\`\`\`
+When analysis is complete, call the \`simplify_candidates\` tool exactly once as your final action. Put ALL candidates in that tool call.
 
 Field notes:
 - \`category\` — one of: "reuse", "quality", "efficiency"
@@ -126,7 +122,8 @@ Field notes:
 - \`reason\` — single plain-text sentence stating the concrete fix
 - \`action\` — one of: "delete", "inline", "refactor", "parallelize"
 
-If there are no candidates, output \`{"candidates": []}\`. Do NOT output anything after the closing \`\`\` fence.
+If there are no candidates, call \`simplify_candidates\` with an empty \`candidates\` array.
+Do NOT write a prose-only final answer; the extension relies on the tool result.
 `;
 
 export default function simplifyExtension(pi: ExtensionAPI) {
@@ -178,6 +175,101 @@ export default function simplifyExtension(pi: ExtensionAPI) {
     return ACTION_VALUES.has(v as Action) ? (v as Action) : null;
   }
 
+  function normalizeCandidates(list: unknown): SimplifyResult[] {
+    if (!Array.isArray(list)) return [];
+
+    const out: SimplifyResult[] = [];
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const raw = item as Record<string, unknown>;
+      const file = stripMarkdown(String(raw.file ?? raw.location ?? ""));
+      if (!file || file.includes("..") || file.startsWith("/")) continue;
+      const action = normalizeAction(raw.action);
+      if (!action) continue;
+      const reason = stripMarkdown(String(raw.reason ?? raw.description ?? ""));
+      out.push({
+        category: normalizeCategory(raw.category),
+        file,
+        lines: stripMarkdown(String(raw.lines ?? "")),
+        reason: reason || "(no reason provided)",
+        risk: normalizeRisk(raw.risk),
+        action,
+      });
+    }
+    return out;
+  }
+
+  let resolvePendingCandidatesTool: ((candidates: SimplifyResult[]) => void) | null = null;
+  let latestToolCandidates: SimplifyResult[] | null = null;
+
+  const simplifyCandidatesParameters = Type.Object({
+    candidates: Type.Array(
+      Type.Object({
+        category: Type.String({ description: "reuse, quality, or efficiency" }),
+        risk: Type.String({ description: "safe, confirm, or review" }),
+        file: Type.String({ description: "Repository-relative path" }),
+        lines: Type.Optional(Type.String({ description: "Line number or range" })),
+        reason: Type.String({ description: "Concrete fix in one sentence" }),
+        action: Type.String({ description: "delete, inline, refactor, or parallelize" }),
+      }),
+    ),
+  });
+
+  const simplifyCandidatesTool = defineTool({
+    name: "simplify_candidates",
+    label: "Simplify Candidates",
+    description:
+      "Return the complete candidate list for /simplify. Use as the final action after analyzing changed code.",
+    promptSnippet: "Return structured cleanup candidates for /simplify as a terminating result",
+    promptGuidelines: [
+      "Use simplify_candidates exactly once as the final action when the /simplify command asks for cleanup candidates.",
+    ],
+    parameters: simplifyCandidatesParameters,
+    async execute(_toolCallId, params) {
+      const resolve = resolvePendingCandidatesTool;
+      if (!resolve) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Ignored simplify candidates because no /simplify analysis is pending.",
+            },
+          ],
+          details: {
+            ignored: true,
+            candidates: [],
+            byRisk: { safe: 0, confirm: 0, review: 0 },
+          },
+          terminate: true,
+        };
+      }
+
+      const candidates = normalizeCandidates(params.candidates);
+      latestToolCandidates = candidates;
+      resolvePendingCandidatesTool = null;
+      resolve(candidates);
+
+      const byRisk = {
+        safe: candidates.filter((c) => c.risk === "safe").length,
+        confirm: candidates.filter((c) => c.risk === "confirm").length,
+        review: candidates.filter((c) => c.risk === "review").length,
+      };
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Captured ${candidates.length} simplify candidates (${byRisk.safe} safe, ${byRisk.confirm} confirm, ${byRisk.review} review).`,
+          },
+        ],
+        details: { ignored: false, candidates, byRisk },
+        terminate: true,
+      };
+    },
+  });
+
+  pi.registerTool(simplifyCandidatesTool);
+
   function stripMarkdown(text: string): string {
     return text.replace(/[`*]/g, "").trim();
   }
@@ -204,26 +296,8 @@ export default function simplifyExtension(pi: ExtensionAPI) {
         const parsed = JSON.parse(blocks[i]);
         const list = parsed?.candidates;
         if (!Array.isArray(list)) continue;
-        const out: SimplifyResult[] = [];
-        for (const item of list) {
-          if (!item || typeof item !== "object") continue;
-          const file = stripMarkdown(String(item.file ?? item.location ?? ""));
-          // Validate path is within repo (no path traversal)
-          if (!file || file.includes("..") || file.startsWith("/")) continue;
-          const reason = stripMarkdown(String(item.reason ?? item.description ?? ""));
-          const action = normalizeAction(item.action);
-          if (!action) continue;
-          out.push({
-            category: normalizeCategory(item.category),
-            file,
-            lines: stripMarkdown(String(item.lines ?? "")),
-            reason: reason || "(no reason provided)",
-            risk: normalizeRisk(item.risk),
-            action,
-          });
-        }
         // A valid candidates array (even empty) is a successful parse
-        return out;
+        return normalizeCandidates(list);
       } catch {
         // try next block
       }
@@ -302,6 +376,16 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           }
         }
 
+        const primaryWidth = Math.min(
+          56,
+          Math.max(
+            24,
+            ...visibleItems
+              .filter((v) => v.selectableIdx !== null)
+              .map((v) => visibleWidth(v.item.label) + 6),
+          ),
+        );
+
         // Show visible range with scroll
         const startIdx = Math.max(0, scrollOffset);
         const endIdx = Math.min(visibleItems.length, startIdx + maxVisible);
@@ -310,24 +394,34 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           const { selectableIdx, item } = visibleItems[vIdx];
 
           if (item.value.startsWith("__section__")) {
-            // Section header
-            lines.push(theme.fg("accent", item.label));
-          } else {
-            // Selectable item
-            const isCursor = selectableIdx === cursorPos;
-            const isSelected = selectableIdx !== null && selectedSet.has(selectableIdx);
-            const prefix = isCursor ? theme.fg("accent", "> ") : "  ";
-            const checkbox = isSelected ? theme.fg("success", "[x]") : theme.fg("dim", "[ ]");
-            const truncatedLabel = truncateToWidth(item.label, width - 6);
-            const line = `${prefix}${checkbox} ${truncatedLabel}`;
-            lines.push(isCursor ? theme.fg("accent", line) : line);
+            lines.push(theme.fg("muted", `  ${item.label}`));
+            continue;
           }
+
+          const isCursor = selectableIdx === cursorPos;
+          const isSelected = selectableIdx !== null && selectedSet.has(selectableIdx);
+          const prefix = isCursor ? "→ " : "  ";
+          const checkbox = isSelected ? "[x]" : "[ ]";
+          const primary = `${checkbox} ${item.label}`;
+
+          if (item.description && width > 48) {
+            const maxPrimaryWidth = Math.max(1, Math.min(primaryWidth, width - 16));
+            const truncatedPrimary = truncateToWidth(primary, maxPrimaryWidth, "");
+            const spacing = " ".repeat(Math.max(1, maxPrimaryWidth - visibleWidth(truncatedPrimary)));
+            const remainingWidth = width - visibleWidth(prefix) - visibleWidth(truncatedPrimary) - spacing.length - 2;
+            const description = truncateToWidth(item.description, Math.max(0, remainingWidth), "");
+            const line = `${prefix}${truncatedPrimary}${theme.fg("muted", spacing + description)}`;
+            lines.push(isCursor ? theme.fg("accent", line) : line);
+            continue;
+          }
+
+          const line = `${prefix}${truncateToWidth(primary, width - visibleWidth(prefix) - 2, "")}`;
+          lines.push(isCursor ? theme.fg("accent", line) : line);
         }
 
-        // Scroll indicator
+        // Scroll indicator: match SelectList's compact position indicator.
         if (visibleItems.length > maxVisible) {
-          const scrollInfo = `  (${startIdx + 1}-${endIdx}/${visibleItems.length})`;
-          lines.push(theme.fg("dim", scrollInfo));
+          lines.push(theme.fg("dim", truncateToWidth(`  (${cursorPos + 1}/${selectableItems.length})`, width - 2, "")));
         }
 
         return lines;
@@ -504,15 +598,17 @@ After applying all changes:
         fullPrompt += `\n\n## Additional Focus\n\n${args.trim()}`;
       }
 
-      // Reset capture buffer, then send prompt and wait.
-      // message_end events append to assistantTextBuffer during the turn.
-      //
-      // Wait for the queued analysis turn to actually begin before waiting for
-      // idle; otherwise waitForIdle() can return immediately while the agent is
-      // still idle and the queued prompt has not started yet.
+      // Reset capture state, then send prompt and wait.
+      // The preferred path is the structured simplify_candidates tool result.
+      // message_end text capture remains as a compatibility fallback for older
+      // sessions/models that still return a fenced JSON block.
       assistantTextBuffer = "";
+      latestToolCandidates = null;
       const turnStarted = new Promise<void>((r) => {
         resolvePendingTurnStart = r;
+      });
+      const toolResult = new Promise<SimplifyResult[]>((r) => {
+        resolvePendingCandidatesTool = r;
       });
 
       pi.sendUserMessage(fullPrompt);
@@ -523,23 +619,25 @@ After applying all changes:
       ]);
       if (!started) {
         resolvePendingTurnStart = null;
+        resolvePendingCandidatesTool = null;
         ctx.ui.notify("Analysis did not start within 10 seconds. Please try again.", "warning");
         return;
       }
 
       await ctx.waitForIdle();
-      const analysisText = assistantTextBuffer;
 
-      if (!analysisText) {
-        ctx.ui.notify("Could not read analysis — no response captured.", "error");
-        return;
-      }
-
-      const candidates = parseCandidatesJSON(analysisText);
+      const candidates =
+        latestToolCandidates ??
+        (await Promise.race<SimplifyResult[] | null>([
+          toolResult,
+          new Promise<null>((r) => setTimeout(() => r(null), 100)),
+        ])) ??
+        parseCandidatesJSON(assistantTextBuffer);
+      resolvePendingCandidatesTool = null;
 
       if (candidates === null) {
         ctx.ui.notify(
-          "Could not parse review findings — the model did not return the expected JSON block.",
+          "Could not read review findings — the model did not call simplify_candidates or return fallback JSON.",
           "warning",
         );
         return;
