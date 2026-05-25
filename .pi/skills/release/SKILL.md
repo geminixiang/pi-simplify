@@ -11,15 +11,15 @@ Repo defaults:
 - remote: `origin`
 - repo: `geminixiang/pi-simplify`
 - npm package: `@geminixiang/pi-simplify`
-- use `package.json` version as the git tag and GitHub release title
+- use `package.json` version for npm/package files, and `v<version>` for the git tag and GitHub release title
 - versions with `-alpha.`, `-beta.`, or `-rc.` are prereleases by default
 
 ## Version rules
 
 Examples:
 
-- stable: `0.2.1`, `0.3.0`, `1.0.0`
-- prerelease: `0.2.0-beta.8`, `0.3.0-rc.1`, `1.0.0-alpha.2`
+- stable package version: `0.2.1`, `0.3.0`, `1.0.0` → release tag/title: `v0.2.1`, `v0.3.0`, `v1.0.0`
+- prerelease package version: `0.2.0-beta.8`, `0.3.0-rc.1`, `1.0.0-alpha.2` → release tag/title: `v0.2.0-beta.8`, `v0.3.0-rc.1`, `v1.0.0-alpha.2`
 
 Guidance:
 
@@ -100,17 +100,17 @@ Write concise notes focused on user-visible changes, usually with:
 - `### Docs and maintenance`
 - `### Verification`
 
-Write notes to `/tmp/pi-simplify-release-<version>.md`. Keep them consistent with the CHANGELOG entry from step 3.
+Write notes to `/tmp/pi-simplify-release-<version>.md`. Keep them consistent with the CHANGELOG entry from step 3. Use `v<previous-version>...v<version>` in compare links.
 
 ### 6. Create or update release
 
 Prerelease:
 
 ```bash
-gh release create <version> \
+gh release create v<version> \
   --repo geminixiang/pi-simplify \
   --target main \
-  --title <version> \
+  --title v<version> \
   --notes-file /tmp/pi-simplify-release-<version>.md \
   --prerelease
 ```
@@ -118,14 +118,14 @@ gh release create <version> \
 Stable:
 
 ```bash
-gh release create <version> \
+gh release create v<version> \
   --repo geminixiang/pi-simplify \
   --target main \
-  --title <version> \
+  --title v<version> \
   --notes-file /tmp/pi-simplify-release-<version>.md
 ```
 
-If it already exists, use `gh release edit <version> ...` and keep prerelease/stable intent consistent.
+If it already exists, use `gh release edit v<version> ...` and keep prerelease/stable intent consistent.
 
 ## Report back
 
