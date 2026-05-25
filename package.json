@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-simplify",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Simplify: Review changed code for reuse, quality, and efficiency",
   "keywords": [
     "pi-package"
