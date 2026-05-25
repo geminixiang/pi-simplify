@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-05-25
+
+### Added
+
+- Support simplifying specific folders and files as snapshot reviews.
+- Add a preset selector for choosing uncommitted changes or folder snapshot mode.
+
+### Fixed
+
+- Keep release tags and GitHub release titles v-prefixed.
+
 ## [0.0.7] - 2026-05-25
 
 ### Changed
