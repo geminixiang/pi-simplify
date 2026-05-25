@@ -50,8 +50,8 @@ Before flagging, **search the codebase** (utility directories, shared modules, f
 
 ## How to Analyze
 
-1. Run \`git diff\` to see what changed.
-2. For each change, classify as **Essential** / **Residual** / **Legacy** (don't flag legacy code unless the diff touches it).
+1. Unless the user explicitly asks for a folder/snapshot review, run \`git diff\` to see what changed. For folder/snapshot review, read the files directly under the requested paths and ignore files outside that scope.
+2. For each change or in-scope snapshot finding, classify as **Essential** / **Residual** / **Legacy** (don't flag legacy code unless the diff touches it; in folder/snapshot mode, flag only in-scope code that is clearly removable or simplifiable).
 3. For each finding:
    - Identify exact file and line(s)
    - Assign **category** (reuse / quality / efficiency) and **risk**

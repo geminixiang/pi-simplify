@@ -1,8 +1,10 @@
 import {
   defineTool,
+  DynamicBorder,
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { SIMPLIFY_PROMPT } from "./prompt.js";
@@ -25,6 +27,58 @@ const actionSchema = Type.Union([
   Type.Literal("refactor"),
   Type.Literal("parallelize"),
 ]);
+
+type SimplifyTarget = { type: "uncommitted" } | { type: "folder"; paths: string[] };
+type ParsedArgs = {
+  target: SimplifyTarget | null;
+  additionalFocus?: string;
+  error?: string;
+};
+
+const SIMPLIFY_PRESETS = [
+  { value: "uncommitted", label: "Simplify uncommitted changes", description: "" },
+  { value: "folder", label: "Simplify a folder (or more)", description: "(snapshot, not diff)" },
+] as const;
+
+type SimplifyPresetValue = (typeof SIMPLIFY_PRESETS)[number]["value"];
+
+function parseSimplifyPaths(value: string): string[] {
+  return value
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function parseArgs(args: string): ParsedArgs {
+  const trimmed = args.trim();
+  if (!trimmed) return { target: null };
+
+  const [subcommand, ...rest] = trimmed.split(/\s+/);
+  if (subcommand?.toLowerCase() !== "folder") {
+    return { target: { type: "uncommitted" }, additionalFocus: trimmed };
+  }
+
+  const paths = parseSimplifyPaths(rest.join(" "));
+  if (paths.length === 0)
+    return { target: null, error: "Usage: /simplify folder <path> [path...]" };
+  return { target: { type: "folder", paths } };
+}
+
+async function hasUncommittedChanges(pi: ExtensionAPI): Promise<boolean> {
+  const { stdout, code } = await pi.exec("git", ["status", "--porcelain"]);
+  return code === 0 && stdout.trim().length > 0;
+}
+
+function buildSimplifyPrompt(target: SimplifyTarget, additionalFocus?: string): string {
+  let fullPrompt = SIMPLIFY_PROMPT;
+
+  if (target.type === "folder") {
+    fullPrompt += `\n\n## Scope Override: Folder Snapshot\n\nReview only the code in these repository-relative paths: ${target.paths.join(", ")}\n\nThis is a snapshot review, not a git diff review. Read files directly under these paths instead of relying on \`git diff\`. Only return candidates whose \`file\` is inside one of these paths.`;
+  }
+
+  if (additionalFocus?.trim()) fullPrompt += `\n\n## Additional Focus\n\n${additionalFocus.trim()}`;
+  return fullPrompt;
+}
 
 function registerSimplifyCandidatesTool(
   pi: ExtensionAPI,
@@ -107,6 +161,75 @@ function registerSimplifyCandidatesTool(
   );
 }
 
+async function showFolderInput(ctx: ExtensionCommandContext): Promise<SimplifyTarget | null> {
+  const result = await ctx.ui.editor(
+    "Enter folders/files to simplify (space-separated or one per line):",
+    ".",
+  );
+
+  if (!result?.trim()) return null;
+  const paths = parseSimplifyPaths(result);
+  if (paths.length === 0) return null;
+
+  return { type: "folder", paths };
+}
+
+async function showSimplifyTargetSelector(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<SimplifyTarget | null> {
+  const presetItems: SelectItem[] = SIMPLIFY_PRESETS.map((preset) => ({
+    value: preset.value,
+    label: preset.label,
+    description: preset.description,
+  }));
+  const smartDefault = (await hasUncommittedChanges(pi)) ? "uncommitted" : "folder";
+  const smartDefaultIndex = presetItems.findIndex((item) => item.value === smartDefault);
+
+  while (true) {
+    const result = await ctx.ui.custom<SimplifyPresetValue | null>((tui, theme, _kb, done) => {
+      const container = new Container();
+      container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+      container.addChild(new Text(theme.fg("accent", theme.bold("Select a simplify preset"))));
+
+      const selectList = new SelectList(presetItems, Math.min(presetItems.length, 10), {
+        selectedPrefix: (text) => theme.fg("accent", text),
+        selectedText: (text) => theme.fg("accent", text),
+        description: (text) => theme.fg("muted", text),
+        scrollInfo: (text) => theme.fg("dim", text),
+        noMatch: (text) => theme.fg("warning", text),
+      });
+
+      if (smartDefaultIndex >= 0) selectList.setSelectedIndex(smartDefaultIndex);
+      selectList.onSelect = (item) => done(item.value as SimplifyPresetValue);
+      selectList.onCancel = () => done(null);
+
+      container.addChild(selectList);
+      container.addChild(new Text(theme.fg("dim", "Press enter to confirm or esc to cancel")));
+      container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+      return {
+        render(width: number) {
+          return container.render(width);
+        },
+        invalidate() {
+          container.invalidate();
+        },
+        handleInput(data: string) {
+          selectList.handleInput(data);
+          tui.requestRender();
+        },
+      };
+    });
+
+    if (!result) return null;
+    if (result === "uncommitted") return { type: "uncommitted" };
+
+    const target = await showFolderInput(ctx);
+    if (target) return target;
+  }
+}
+
 async function applyFindings(
   ctx: ExtensionCommandContext,
   selected: SimplifyResult[],
@@ -167,7 +290,8 @@ export function registerSimplifyWorkflow(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("simplify", {
-    description: "Review changed code for reuse, quality, and efficiency, then apply fixes",
+    description:
+      "Review changed code or folders for reuse, quality, and efficiency, then apply fixes",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       if (!ctx.hasUI) {
         ctx.ui.notify("Simplify requires interactive mode", "error");
@@ -188,16 +312,29 @@ export function registerSimplifyWorkflow(pi: ExtensionAPI) {
         return;
       }
 
-      const { stdout: gitStatus } = await pi.exec("git", ["status", "--porcelain"]);
-      if (!gitStatus.trim()) {
-        ctx.ui.notify("No git changes found. Simplify reviews uncommitted changes.", "info");
+      const parsed = parseArgs(args);
+      if (parsed.error) {
+        ctx.ui.notify(parsed.error, "error");
         return;
       }
 
-      ctx.ui.notify("Analyzing code for review findings...", "info");
+      let target = parsed.target;
+      if (!target) target = await showSimplifyTargetSelector(ctx, pi);
+      if (!target) {
+        ctx.ui.notify("Simplify cancelled", "info");
+        return;
+      }
 
-      let fullPrompt = SIMPLIFY_PROMPT;
-      if (args.trim()) fullPrompt += `\n\n## Additional Focus\n\n${args.trim()}`;
+      if (target.type === "uncommitted" && !(await hasUncommittedChanges(pi))) {
+        ctx.ui.notify("No git changes found. Choose folder mode to simplify a snapshot.", "info");
+        return;
+      }
+
+      const targetHint =
+        target.type === "folder" ? `folders: ${target.paths.join(", ")}` : "uncommitted changes";
+      ctx.ui.notify(`Analyzing ${targetHint} for review findings...`, "info");
+
+      const fullPrompt = buildSimplifyPrompt(target, parsed.additionalFocus);
 
       latestToolCandidates = null;
       const turnStarted = new Promise<void>((r) => {

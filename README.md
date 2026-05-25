@@ -30,11 +30,21 @@ pi install npm:@geminixiang/pi-simplify
 /simplify
 ```
 
-Analyzes all git changes and presents cleanup candidates:
+Opens a preset selector. Choose uncommitted changes or a folder snapshot.
+
+Uncommitted mode analyzes all git changes and presents cleanup candidates:
 
 - **Safe** (green) - auto-selected, will be deleted
 - **Confirm** (yellow) - delete after user confirms
 - **Review** (orange) - user should review first
+
+### Simplify Folders
+
+```
+/simplify folder src docs
+```
+
+Analyzes the specified folders/files as a snapshot (not a diff), even when there are no local git changes.
 
 ### With Focus
 
