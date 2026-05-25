@@ -12,13 +12,7 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-  matchesKey,
-  Key,
-  truncateToWidth,
-  visibleWidth,
-  type SelectItem,
-} from "@earendil-works/pi-tui";
+import { matchesKey, Key, wrapTextWithAnsi, type SelectItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 type Category = "reuse" | "quality" | "efficiency";
@@ -376,16 +370,6 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           }
         }
 
-        const primaryWidth = Math.min(
-          56,
-          Math.max(
-            24,
-            ...visibleItems
-              .filter((v) => v.selectableIdx !== null)
-              .map((v) => visibleWidth(v.item.label) + 6),
-          ),
-        );
-
         // Show visible range with scroll
         const startIdx = Math.max(0, scrollOffset);
         const endIdx = Math.min(visibleItems.length, startIdx + maxVisible);
@@ -402,26 +386,19 @@ export default function simplifyExtension(pi: ExtensionAPI) {
           const isSelected = selectableIdx !== null && selectedSet.has(selectableIdx);
           const prefix = isCursor ? "→ " : "  ";
           const checkbox = isSelected ? "[x]" : "[ ]";
-          const primary = `${checkbox} ${item.label}`;
-
-          if (item.description && width > 48) {
-            const maxPrimaryWidth = Math.max(1, Math.min(primaryWidth, width - 16));
-            const truncatedPrimary = truncateToWidth(primary, maxPrimaryWidth, "");
-            const spacing = " ".repeat(Math.max(1, maxPrimaryWidth - visibleWidth(truncatedPrimary)));
-            const remainingWidth = width - visibleWidth(prefix) - visibleWidth(truncatedPrimary) - spacing.length - 2;
-            const description = truncateToWidth(item.description, Math.max(0, remainingWidth), "");
-            const line = `${prefix}${truncatedPrimary}${theme.fg("muted", spacing + description)}`;
-            lines.push(isCursor ? theme.fg("accent", line) : line);
-            continue;
-          }
-
-          const line = `${prefix}${truncateToWidth(primary, width - visibleWidth(prefix) - 2, "")}`;
-          lines.push(isCursor ? theme.fg("accent", line) : line);
+          const line = `${prefix}${checkbox} ${item.label}`;
+          const styledLine = isCursor ? theme.fg("accent", line) : line;
+          lines.push(...wrapTextWithAnsi(styledLine, width));
         }
 
         // Scroll indicator: match SelectList's compact position indicator.
         if (visibleItems.length > maxVisible) {
-          lines.push(theme.fg("dim", truncateToWidth(`  (${cursorPos + 1}/${selectableItems.length})`, width - 2, "")));
+          lines.push(
+            ...wrapTextWithAnsi(
+              theme.fg("dim", `  (${cursorPos + 1}/${selectableItems.length})`),
+              width,
+            ),
+          );
         }
 
         return lines;
