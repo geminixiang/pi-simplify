@@ -1,11 +1,10 @@
-import { getSelectListTheme, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
-  matchesKey,
-  Key,
-  SelectList,
-  wrapTextWithAnsi,
-  type SelectItem,
-} from "@earendil-works/pi-tui";
+  getSelectListTheme,
+  keyHint,
+  rawKeyHint,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
+import { matchesKey, SelectList, wrapTextWithAnsi, type SelectItem } from "@earendil-works/pi-tui";
 
 import type { Action, SimplifyResult } from "./types.js";
 
@@ -64,7 +63,7 @@ export async function showCandidateSelector(
       Math.min(selectedIndex - Math.floor(maxVisible / 2), selectableItems.length - maxVisible),
     );
 
-  const result = await ctx.ui.custom<SimplifyResult[]>((tui, theme, _keybindings, done) => {
+  const result = await ctx.ui.custom<SimplifyResult[]>((tui, theme, keybindings, done) => {
     const updateListLabel = (index: number) => {
       const item = listItems[index];
       const { candidate } = selectableItems[index];
@@ -81,6 +80,34 @@ export async function showCandidateSelector(
       cursorPos = Number(item.value);
     };
     selectList.onCancel = () => done([]);
+
+    const submitSelection = () => {
+      done(Array.from(selectedSet).map((i) => selectableItems[i].candidate));
+    };
+
+    const cancelSelection = () => {
+      done([]);
+    };
+
+    const toggleCurrent = () => {
+      if (selectedSet.has(cursorPos)) {
+        selectedSet.delete(cursorPos);
+      } else {
+        selectedSet.add(cursorPos);
+      }
+      updateListLabel(cursorPos);
+      tui.requestRender();
+    };
+
+    const toggleAll = () => {
+      if (selectedSet.size === selectableItems.length) {
+        selectedSet.clear();
+      } else {
+        for (let i = 0; i < selectableItems.length; i++) selectedSet.add(i);
+      }
+      updateAllListLabels();
+      tui.requestRender();
+    };
 
     return {
       render(width: number) {
@@ -119,14 +146,23 @@ export async function showCandidateSelector(
           );
           lines.push(theme.fg("muted", `${detailPrefix}Kind: ${current.category}`));
           lines.push(theme.fg("muted", `${detailPrefix}Fix: ${ACTION_LABEL[current.action]}`));
-          lines.push(theme.fg("borderMuted", `${detailIndent}└─ space selects this fix`));
+          lines.push(
+            theme.fg("borderMuted", `${detailIndent}└─ ${rawKeyHint("space", "selects this fix")}`),
+          );
         }
 
         lines.push("");
         lines.push(
           theme.fg(
             "muted",
-            `Selected: ${selectedSet.size} • ↑↓ navigate • space toggle • a select all • enter confirm • esc cancel`,
+            [
+              `Selected: ${selectedSet.size}`,
+              rawKeyHint("↑↓", "navigate"),
+              rawKeyHint("space", "toggle"),
+              rawKeyHint("a", "select all"),
+              keyHint("tui.select.confirm", "confirm"),
+              keyHint("tui.select.cancel", "cancel"),
+            ].join(" • "),
           ),
         );
         return lines;
@@ -135,35 +171,12 @@ export async function showCandidateSelector(
         selectList.invalidate();
       },
       handleInput(data: string) {
-        if (matchesKey(data, Key.enter)) {
-          const results = Array.from(selectedSet).map((i) => selectableItems[i].candidate);
-          done(results);
-          return;
-        }
-        if (matchesKey(data, Key.escape)) {
-          done([]);
-          return;
-        }
-        if (matchesKey(data, Key.space)) {
-          if (selectedSet.has(cursorPos)) {
-            selectedSet.delete(cursorPos);
-          } else {
-            selectedSet.add(cursorPos);
-          }
-          updateListLabel(cursorPos);
-          tui.requestRender();
-          return;
-        }
-        if (matchesKey(data, "a")) {
-          if (selectedSet.size === selectableItems.length) {
-            selectedSet.clear();
-          } else {
-            for (let i = 0; i < selectableItems.length; i++) selectedSet.add(i);
-          }
-          updateAllListLabels();
-          tui.requestRender();
-          return;
-        }
+        if (keybindings.matches(data, "tui.select.confirm")) return submitSelection();
+        if (keybindings.matches(data, "tui.select.cancel")) return cancelSelection();
+
+        // Extra shortcuts: these selector-specific actions are not registered pi keybinding ids.
+        if (matchesKey(data, "space")) return toggleCurrent();
+        if (matchesKey(data, "a")) return toggleAll();
 
         const previousCursorPos = cursorPos;
         selectList.handleInput(data);

@@ -1,6 +1,7 @@
 import {
   defineTool,
   DynamicBorder,
+  keyHint,
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
@@ -205,7 +206,11 @@ async function showSimplifyTargetSelector(
       selectList.onCancel = () => done(null);
 
       container.addChild(selectList);
-      container.addChild(new Text(theme.fg("dim", "Press enter to confirm or esc to cancel")));
+      container.addChild(
+        new Text(
+          `${keyHint("tui.select.confirm", "confirm")}  ${keyHint("tui.select.cancel", "cancel")}`,
+        ),
+      );
       container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
 
       return {
