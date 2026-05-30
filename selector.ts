@@ -133,12 +133,21 @@ export async function showCandidateSelector(
           const detailIndent = "    ";
           const detailPrefix = `${detailIndent}│ `;
           const location = current.lines ? `${current.file}:${current.lines}` : current.file;
-          lines.push(theme.fg("borderMuted", `${detailIndent}┌─ recommendation`));
-          lines.push(
-            ...wrapTextWithAnsi(current.reason, Math.max(1, width - detailPrefix.length)).map(
-              (wrappedLine) => theme.fg("muted", `${detailPrefix}${wrappedLine}`),
-            ),
-          );
+          const wrapWidth = Math.max(1, width - detailPrefix.length);
+
+          const pushSection = (heading: string, body: string) => {
+            if (!body) return;
+            lines.push(theme.fg("borderMuted", `${detailIndent}┌─ ${heading}`));
+            lines.push(
+              ...wrapTextWithAnsi(body, wrapWidth).map((wrappedLine) =>
+                theme.fg("muted", `${detailPrefix}${wrappedLine}`),
+              ),
+            );
+          };
+
+          pushSection("Root issue", current.rootIssue);
+          pushSection("Consequence", current.consequence);
+          pushSection("Benefit after fix", current.benefit);
           lines.push(theme.fg("muted", `${detailPrefix}`));
           lines.push(theme.fg("muted", `${detailPrefix}File: ${location}`));
           lines.push(

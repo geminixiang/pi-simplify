@@ -100,7 +100,21 @@ function registerSimplifyCandidatesTool(
           pattern: "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$",
         }),
         lines: Type.String({ description: "Line number or range, or empty string if unknown" }),
-        reason: Type.String({ description: "Concrete fix in one sentence" }),
+        rootIssue: Type.String({
+          description:
+            "The root problem with the current code. For reuse, name the existing symbol + file it duplicates. State the underlying flaw, not the fix.",
+          minLength: 1,
+        }),
+        consequence: Type.String({
+          description:
+            "What this problem leads to if left unchanged (e.g. divergent implementations, N+1 queries on every request, untested duplicate logic). If there is no real consequence, do not flag it.",
+          minLength: 1,
+        }),
+        benefit: Type.String({
+          description:
+            "The concrete advantage after applying the fix (e.g. single source of truth, -14 lines, one query instead of N, covered by existing tests).",
+          minLength: 1,
+        }),
         action: actionSchema,
       }),
     ),
@@ -252,7 +266,12 @@ async function applyFindings(
 
 Apply the following findings. Each item includes a bracketed action (e.g. \`[delete]\`, \`[refactor]\`, \`[parallelize]\`, \`[inline]\`) — follow that action, not a blanket delete.
 
-${selected.map((c) => `- ${c.file} (${c.lines || "?"}): ${c.reason} [${c.action}]`).join("\n")}
+${selected
+  .map(
+    (c) =>
+      `- ${c.file} (${c.lines || "?"}) [${c.action}]\n  - Root issue: ${c.rootIssue}\n  - Goal: ${c.benefit}`,
+  )
+  .join("\n")}
 
 For each item:
 1. Read the file to find the exact location

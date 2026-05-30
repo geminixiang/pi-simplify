@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Replace each candidate's single `reason` with a three-part cause-and-effect chain — **root issue**, **consequence**, and **benefit after fix** — so findings explain _why_ they matter, not just _what_ to change.
+- Require a real, non-trivial consequence for every finding; items that only make code "slightly shorter" are no longer flagged.
+- Show the full root issue → consequence → benefit chain in the findings selector, and pass the root issue and goal to the apply step.
+
 ## [0.0.9] - 2026-05-27
 
 ### Added
