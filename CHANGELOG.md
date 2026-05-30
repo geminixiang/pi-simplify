@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-05-30
+
 ### Changed
 
 - Replace each candidate's single `reason` with a three-part cause-and-effect chain — **root issue**, **consequence**, and **benefit after fix** — so findings explain _why_ they matter, not just _what_ to change.
