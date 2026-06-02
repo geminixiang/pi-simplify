@@ -25,8 +25,15 @@ Before flagging, **search the codebase** (utility directories, shared modules, f
 #### B3. Commented-out Code (Review)
 - Old logic left in comments, disabled features, uncustomized templates
 
-#### B4. Over-engineering (Confirm)
+#### B4. Over-engineering / Thin Wrappers (Confirm)
 - Abstractions created "for future use" but unused, single-call-site helpers that should be inlined, useless indirection
+- Thin wrappers that only rename another function or constructor without adding validation, policy, error handling, logging, or a stable public boundary
+- Platform-specific wrapper modules that merely re-export generic session/config helpers under different names
+- Method wrappers on classes that only delegate to a free function already available to callers
+- Test-only exported helpers that can use the real internal/public helper directly instead
+- Small formatting/command helpers whose name repeats a one-line call and have only one call site
+
+**Thin-wrapper discipline:** prefer deleting the wrapper and calling the underlying primitive directly when the wrapper has no independent semantic responsibility. Keep the wrapper if it protects a public API, documents a domain boundary, centralizes cross-cutting behavior, or isolates an unstable dependency.
 
 #### B5. Hacky Patterns (Confirm)
 - **Redundant state**: state that duplicates other state, cached values that could be derived, observers that could be direct calls
@@ -56,6 +63,20 @@ Before flagging, **search the codebase** (utility directories, shared modules, f
    - Identify exact file and line(s)
    - Assign **category** (reuse / quality / efficiency) and **risk**
    - State the concrete fix (which existing utility to call, which lines to delete, how to parallelize, etc.)
+
+## Thin Wrapper Review Heuristics
+
+When hunting simplification opportunities, explicitly scan for these patterns:
+
+- **Rename-only wrapper:** \`foo()\` only calls \`bar()\` with the same inputs. Inline \`bar()\` unless \`foo\` is a real public/domain concept.
+- **Constructor/factory wrapper:** \`createX(args)\` only returns \`new X(args)\`. Inline construction unless the factory selects implementations or enforces policy.
+- **Scope-specific alias:** \`SlackThing\`/\`ConversationThing\` only wraps a generic helper. Delete it if the generic name is already clear at call sites.
+- **Single-call-site helper:** a helper with one caller and no meaningful name compression. Inline it, especially for one-line formatting, parsing, or path helpers.
+- **Duplicated write APIs:** several \`saveFooConfig\` functions patch different fields in the same file. Consolidate into one \`updateSettings(patch)\`-style API.
+- **Test-only export:** exported solely so tests can call a thin wrapper. Test the underlying public helper or observable behavior instead.
+- **Pass-through class method:** a class method only delegates to a module-level function and is not required by an interface. Remove the method or call the function directly.
+
+Do **not** flag wrappers whose consequence is only "one extra line". Flag them when they create a real maintenance cost: multiple ways to do the same operation, unclear source of truth, misleading domain boundaries, duplicated tests for delegated behavior, or user/developer uncertainty about which API is authoritative.
 
 ## Risk Levels
 
