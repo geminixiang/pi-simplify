@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-06-03
+
+### Changed
+
+- Add thin-wrapper review heuristics so `/simplify` flags rename-only wrappers, pass-through factories, single-call-site helpers, duplicated write APIs, and test-only exports only when they create real maintenance cost.
+
 ## [0.0.10] - 2026-05-30
 
 ### Changed
