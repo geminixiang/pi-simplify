@@ -9,8 +9,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { registerCodeSmellWorkflow } from "./code-smell-workflow.js";
-import { registerSimplifyWorkflow } from "./workflow.js";
+import { registerCodeSmellWorkflow } from "./src/code-smell-workflow.js";
+import { registerSimplifyWorkflow } from "./src/workflow.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
