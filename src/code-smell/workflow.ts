@@ -205,7 +205,10 @@ function registerFindingsTool(
 }
 
 function buildPrompt(target: Target, focus?: string): string {
-  let prompt = `${CODE_SMELL_PROMPT}\n\n## Scope\n\nReview only these repository-relative paths: ${target.paths.join(", ")}.`;
+  let prompt = CODE_SMELL_PROMPT;
+  const isRepoRoot = target.paths.length === 1 && target.paths[0] === ".";
+  if (!isRepoRoot)
+    prompt += `\n\n## Scope\n\nReview only these repository-relative paths: ${target.paths.join(", ")}.`;
   if (focus?.trim()) prompt += `\n\n## Additional Focus\n\n${focus.trim()}`;
   return prompt;
 }
