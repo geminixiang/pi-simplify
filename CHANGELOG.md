@@ -6,14 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.0.12] - 2026-06-03
+## [0.1.0] - 2026-06-03
 
 ### Added
 
 - Add `/code-smell` command: finds structural problems with programmatic checks (debug remnants, commented-out code, duplication, complex functions) plus agent review across complexity, duplication, coupling, state, errors, performance, and maintainability smell families.
-- Programmatic scanner (`checks.ts`) runs deterministically before agent review; findings are verified by reading files before surfacing them.
+- Programmatic scanner runs deterministically before agent review; findings are verified by reading files before surfacing them.
 - Interactive findings selector: ranked by severity, auto-selects high-severity / high-confidence items, shows cause-effect chain inline.
-- `code-smell` skill bundled for documentation and standalone use.
+
+### Fixed
+
+- Skip redundant `## Scope` section in the agent prompt when scanning the repository root.
+
+### Changed
+
+- Reorganise source into `src/simplify/` and `src/code-smell/` subdirectories.
 
 ## [0.0.11] - 2026-06-03
 
