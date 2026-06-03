@@ -10,8 +10,8 @@ import { Container, SelectList, Text, type SelectItem } from "@earendil-works/pi
 import { Type } from "typebox";
 
 import { runProgrammaticChecks } from "./checks.js";
-import { CODE_SMELL_PROMPT } from "./code-smell-prompt.js";
-import { showFindingSelector } from "./code-smell-selector.js";
+import { CODE_SMELL_PROMPT } from "./prompt.js";
+import { showFindingSelector } from "./selector.js";
 import type { CodeSmellFinding } from "./types.js";
 
 const categorySchema = Type.Union([
