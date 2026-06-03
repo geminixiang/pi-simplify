@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/pi-simplify",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "description": "Simplify: Review changed code for reuse, quality, and efficiency",
   "keywords": [
     "pi-package"
@@ -31,6 +31,9 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   }
 }

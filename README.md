@@ -16,6 +16,8 @@ After implementing a feature, your code often accumulates:
 
 `/simplify` finds these and removes them.
 
+`/code-smell` goes deeper — it runs programmatic checks plus agent review to surface structural problems like coupling, error handling gaps, and performance issues.
+
 ## Installation
 
 ```sh
@@ -23,6 +25,32 @@ pi install npm:@geminixiang/pi-simplify
 ```
 
 ## Usage
+
+### Code Smell Analysis
+
+```
+/code-smell
+```
+
+Opens a scope selector. Choose to scan the repository or specific paths.
+
+Runs programmatic checks (debug remnants, commented-out code, duplication, complex functions) then agent review across seven smell families:
+
+- **Complexity** - long functions, deep nesting, mixed responsibilities
+- **Duplication** - copy-paste blocks, repeated condition chains
+- **Coupling** - cross-layer reach-through, boundary violations
+- **State** - redundant derived state, multiple sources of truth
+- **Errors** - swallowed errors, empty catches, inconsistent mapping
+- **Performance** - N+1 loops, sequential independent awaits
+- **Maintainability** - debug remnants, TODO/HACK markers, stringly-typed constants
+
+Findings are ranked by severity. Select which to fix and the agent applies small, behavior-preserving cleanups.
+
+```
+/code-smell src lib
+```
+
+Scans specific paths directly.
 
 ### Full Simplify
 
@@ -52,6 +80,15 @@ Analyzes the specified folders/files as a snapshot (not a diff), even when there
 /simplify focus on the utils folder
 /simplify focus on removing debug code
 ```
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/simplify` | Delete excess after a feature: dead code, debug remnants, thin wrappers |
+| `/simplify folder <paths>` | Same as above but snapshot mode (no git diff needed) |
+| `/code-smell` | Find structural problems: coupling, complexity, error handling, performance |
+| `/code-smell <paths>` | Scan specific paths for code smells |
 
 ## Comparison with pi-review
 
