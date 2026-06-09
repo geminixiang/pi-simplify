@@ -58,13 +58,23 @@ Scans specific paths directly.
 /simplify
 ```
 
-Opens a preset selector. Choose uncommitted changes or a folder snapshot.
+Opens a preset selector. Choose uncommitted changes, the previous commit, or a folder snapshot.
 
 Uncommitted mode analyzes all git changes and presents cleanup candidates:
 
 - **Safe** (green) - auto-selected, will be deleted
 - **Confirm** (yellow) - delete after user confirms
 - **Review** (orange) - user should review first
+
+### Simplify Previous Commit
+
+```
+/simplify previous
+```
+
+Analyzes only the last commit (`git diff HEAD~1..HEAD`), even if there are uncommitted local changes.
+
+Aliases: `/simplify previous-commit`, `/simplify prev`, `/simplify last-commit`.
 
 ### Simplify Folders
 
@@ -83,12 +93,13 @@ Analyzes the specified folders/files as a snapshot (not a diff), even when there
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `/simplify` | Delete excess after a feature: dead code, debug remnants, thin wrappers |
-| `/simplify folder <paths>` | Same as above but snapshot mode (no git diff needed) |
-| `/code-smell` | Find structural problems: coupling, complexity, error handling, performance |
-| `/code-smell <paths>` | Scan specific paths for code smells |
+| Command                    | Purpose                                                                     |
+| -------------------------- | --------------------------------------------------------------------------- |
+| `/simplify`                | Delete excess after a feature: dead code, debug remnants, thin wrappers     |
+| `/simplify previous`       | Same as above but scoped to the previous commit (`HEAD~1..HEAD`)            |
+| `/simplify folder <paths>` | Same as above but snapshot mode (no git diff needed)                        |
+| `/code-smell`              | Find structural problems: coupling, complexity, error handling, performance |
+| `/code-smell <paths>`      | Scan specific paths for code smells                                         |
 
 ## Comparison with pi-review
 

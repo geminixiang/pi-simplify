@@ -29,7 +29,10 @@ const actionSchema = Type.Union([
   Type.Literal("parallelize"),
 ]);
 
-type SimplifyTarget = { type: "uncommitted" } | { type: "folder"; paths: string[] };
+type SimplifyTarget =
+  | { type: "uncommitted" }
+  | { type: "previous-commit" }
+  | { type: "folder"; paths: string[] };
 type ParsedArgs = {
   target: SimplifyTarget | null;
   additionalFocus?: string;
@@ -38,6 +41,11 @@ type ParsedArgs = {
 
 const SIMPLIFY_PRESETS = [
   { value: "uncommitted", label: "Simplify uncommitted changes", description: "" },
+  {
+    value: "previous-commit",
+    label: "Simplify previous commit",
+    description: "(diff: HEAD~1..HEAD)",
+  },
   { value: "folder", label: "Simplify a folder (or more)", description: "(snapshot, not diff)" },
 ] as const;
 
@@ -55,14 +63,25 @@ function parseArgs(args: string): ParsedArgs {
   if (!trimmed) return { target: null };
 
   const [subcommand, ...rest] = trimmed.split(/\s+/);
-  if (subcommand?.toLowerCase() !== "folder") {
-    return { target: { type: "uncommitted" }, additionalFocus: trimmed };
+  const normalizedSubcommand = subcommand?.toLowerCase();
+
+  if (normalizedSubcommand === "folder") {
+    const paths = parseSimplifyPaths(rest.join(" "));
+    if (paths.length === 0)
+      return { target: null, error: "Usage: /simplify folder <path> [path...]" };
+    return { target: { type: "folder", paths } };
   }
 
-  const paths = parseSimplifyPaths(rest.join(" "));
-  if (paths.length === 0)
-    return { target: null, error: "Usage: /simplify folder <path> [path...]" };
-  return { target: { type: "folder", paths } };
+  if (
+    normalizedSubcommand === "previous" ||
+    normalizedSubcommand === "previous-commit" ||
+    normalizedSubcommand === "prev" ||
+    normalizedSubcommand === "last-commit"
+  ) {
+    return { target: { type: "previous-commit" }, additionalFocus: rest.join(" ") || undefined };
+  }
+
+  return { target: { type: "uncommitted" }, additionalFocus: trimmed };
 }
 
 async function hasUncommittedChanges(pi: ExtensionAPI): Promise<boolean> {
@@ -70,11 +89,21 @@ async function hasUncommittedChanges(pi: ExtensionAPI): Promise<boolean> {
   return code === 0 && stdout.trim().length > 0;
 }
 
+async function hasPreviousCommit(pi: ExtensionAPI): Promise<boolean> {
+  const { code } = await pi.exec("git", ["rev-parse", "--verify", "HEAD~1"]);
+  return code === 0;
+}
+
 function buildSimplifyPrompt(target: SimplifyTarget, additionalFocus?: string): string {
   let fullPrompt = SIMPLIFY_PROMPT;
 
   if (target.type === "folder") {
     fullPrompt += `\n\n## Scope Override: Folder Snapshot\n\nReview only the code in these repository-relative paths: ${target.paths.join(", ")}\n\nThis is a snapshot review, not a git diff review. Read files directly under these paths instead of relying on \`git diff\`. Only return candidates whose \`file\` is inside one of these paths.`;
+  }
+
+  if (target.type === "previous-commit") {
+    fullPrompt +=
+      "\n\n## Scope Override: Previous Commit\n\nReview the previous commit only. Run `git diff HEAD~1..HEAD` to see what changed in the last commit, and treat that diff as the review scope. Do not use uncommitted changes as the analysis target. Only return candidates caused by the previous commit's diff.";
   }
 
   if (additionalFocus?.trim()) fullPrompt += `\n\n## Additional Focus\n\n${additionalFocus.trim()}`;
@@ -243,6 +272,7 @@ async function showSimplifyTargetSelector(
 
     if (!result) return null;
     if (result === "uncommitted") return { type: "uncommitted" };
+    if (result === "previous-commit") return { type: "previous-commit" };
 
     const target = await showFolderInput(ctx);
     if (target) return target;
@@ -354,8 +384,20 @@ export function registerSimplifyWorkflow(pi: ExtensionAPI) {
         return;
       }
 
+      if (target.type === "previous-commit" && !(await hasPreviousCommit(pi))) {
+        ctx.ui.notify(
+          "No previous commit found. Need at least two commits to use this mode.",
+          "info",
+        );
+        return;
+      }
+
       const targetHint =
-        target.type === "folder" ? `folders: ${target.paths.join(", ")}` : "uncommitted changes";
+        target.type === "folder"
+          ? `folders: ${target.paths.join(", ")}`
+          : target.type === "previous-commit"
+            ? "previous commit"
+            : "uncommitted changes";
       ctx.ui.notify(`Analyzing ${targetHint} for review findings...`, "info");
 
       const fullPrompt = buildSimplifyPrompt(target, parsed.additionalFocus);
